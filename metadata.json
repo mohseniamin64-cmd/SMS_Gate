@@ -1,0 +1,6 @@
+{
+  "name": "SMS Center",
+  "description": "An independent, modern Android SMS Gateway and local synchronization hub matching SMSGate functionality.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -537,3 +537,16 @@
 - تست: :app:testDebugUnitTest اجرا شد اما baseline پیش از compile به‌دلیل resolve نشدن com.android.application:9.1.1 متوقف شد.
 - وضعیت: UI انجام شد؛ Build و smoke test به‌دلیل blocker محیط/Dependency تأیید نشد.
 - گام بعدی: رفع نسخه یا دسترسی Android Gradle Plugin، سپس اجرای build و screenshot smoke روی شاخه UI.
+
+
+### رکورد ۰۰۴ — ادغام MVP P0 و کنترل انتشار
+
+- تاریخ: 2026-09-02
+- شاخه: `codex/mvp-integration`، پایه: `codex/initial-roadmap` در commit `0c9b90366b2118238ea4e936ce88fb5b398c9038`
+- منابع ادغام‌شده: sync در `c3cbff9d35872f6b8a016195342a71138e13fc14` و UI در `b8b6ee2870b889ece0fc3db13428992685aadcc1`.
+- نتیجه: تغییرات snapshot کامل، tombstone، حذف فقط از cache محلی، تست planner و navigation فارسی Compose با حفظ هر دو رکورد قبلی ادغام شد.
+- حل تعارض: فقط `PROJECT_ROADMAP.md` تعارض متنی داشت؛ رکوردهای sync و UI هر دو حفظ شدند. هیچ endpoint، API، SMS Provider، service، receiver یا منطق کسب‌وکار حذف نشد.
+- اصلاحات integrator: چهار interpolation ناقص در `MainActivity.kt` اصلاح شد؛ reference تعریف‌نشدهٔ `tombstones` در تست planner به tombstone مورد انتظار سناریو اصلاح شد.
+- بررسی‌ها: `git diff --check` و اسکن markerهای merge موفق است؛ گزارش امنیتیِ بدون فایل یا Diff وارد کد نشد.
+- Build/test: اجرا نشد؛ clone فاقد `gradlew.bat` است و Gradle سراسری نیز نصب نیست. Java 21 و `ANDROID_SDK=C:\Android\sdk` موجود است، اما بدون Gradle امکان resolve dependency یا اجرای `:app:compileDebugKotlin` و `:app:testDebugUnitTest` وجود ندارد.
+- گام بعدی انتشار: اجرای build و unit test در CI یا Android Studio دارای Gradle/Android SDK، سپس push همین شاخه و تست Provider روی گوشی واقعی.

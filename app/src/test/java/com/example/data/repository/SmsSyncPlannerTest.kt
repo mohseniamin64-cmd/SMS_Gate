@@ -45,7 +45,7 @@ class SmsSyncPlannerTest {
         val sameContactNewMessage = plan(
             local = remaining,
             provider = remaining + genuinelyNewMessageFromSameContact,
-            tombstones = tombstones
+            tombstones = setOf(fourMessages[1].tombstoneKey())
         )
         assertEquals(listOf(genuinelyNewMessageFromSameContact), sameContactNewMessage.newMessages)
     }

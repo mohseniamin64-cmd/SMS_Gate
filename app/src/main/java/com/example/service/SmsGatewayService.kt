@@ -3,6 +3,7 @@ package com.example.service
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
@@ -10,6 +11,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.example.R
 import com.example.data.local.AppDatabase
 import com.example.data.repository.SmsRepository
@@ -51,7 +53,7 @@ class SmsGatewayService : Service() {
             }
         } catch (e: Exception) {
             serviceScope.launch {
-                repository.log("ERROR", "خطا در ثبت ContentObserver: ${e.message}", "Service")
+                repository.log("ERROR", "خطا در ثبت ContentObserver", "Service")
             }
         }
     }
@@ -99,7 +101,12 @@ class SmsGatewayService : Service() {
             .setOngoing(true)
             .build()
 
-        startForeground(NOTIFICATION_ID, notification)
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        )
     }
 
     private fun startPeriodicSync() {

@@ -120,7 +120,7 @@ class SmsRepository(private val context: Context) {
 
             for (systemSms in plan.newMessages) {
                 val fingerprint = systemSms.getFingerprint()
-                log("INFO", "پیام جدید دریافت شد: از ${systemSms.address}", "InboxSync")
+                log("INFO", "پیام جدید دریافت شد و برای وب‌هوک آماده شد", "InboxSync")
                 val payload = WebhookPayload(
                     event = "sms_received",
                     deviceId = settings.deviceId,
@@ -146,7 +146,7 @@ class SmsRepository(private val context: Context) {
             for (localSms in plan.deletedMessages) {
                 // Only local sync state is removed; the Android SMS Provider is
                 // never modified by this sync path.
-                log("INFO", "تشخیص حذف پیامک: فرستنده ${localSms.address}", "InboxSync")
+                log("INFO", "حذف پیامک از snapshot تشخیص داده شد", "InboxSync")
                 val fingerprint = localSms.getFingerprint()
 
                 // Create Tombstone before removing active sync state.
@@ -175,7 +175,7 @@ class SmsRepository(private val context: Context) {
             log("INFO", "همگام‌سازی پایان یافت. جدید: $newIncomingCount، حذف شده: $deletedCount", "InboxSync")
             return@withContext SyncResult(true, "همگام‌سازی موفق. پیام‌های جدید: $newIncomingCount، حذف‌شده: $deletedCount")
         } catch (e: Exception) {
-            log("ERROR", "خطا در همگام‌سازی پیامک‌ها: ${e.message}", "InboxSync")
+            log("ERROR", "خطا در همگام‌سازی پیامک‌ها", "InboxSync")
             return@withContext SyncResult(false, "خطا در پردازش: ${e.message}")
         }
     }
@@ -226,7 +226,7 @@ class SmsRepository(private val context: Context) {
             log("INFO", "$addedCount پیام جدید به صف محلی اضافه شد", "QueuePoll")
             return@withContext SyncResult(true, "دریافت موفق. پیام‌های جدید: $addedCount")
         } catch (e: Exception) {
-            log("ERROR", "خطا در اتصال به پنل وب: ${e.message}", "QueuePoll")
+            log("ERROR", "خطا در اتصال به پنل وب", "QueuePoll")
             return@withContext SyncResult(false, "خطا در دریافت پیام‌ها: ${e.message}")
         }
     }
@@ -268,7 +268,7 @@ class SmsRepository(private val context: Context) {
             try {
                 if (settings.isTestMode) {
                     // Simulate successfully sent in Test Mode
-                    log("INFO", "ارسال شبیه‌سازی شده (Test Mode): به ${item.phoneNumber} با متن: ${item.messageBody}", "SmsSender")
+                    log("INFO", "ارسال شبیه‌سازی‌شده در حالت تست انجام شد", "SmsSender")
                     smsQueueDao.update(item.copy(status = "SENT"))
                     notifyStatusChange(settings, item.requestId, "SENT", null)
                 } else {
@@ -296,7 +296,7 @@ class SmsRepository(private val context: Context) {
                     )
                 }
             } catch (e: Exception) {
-                log("ERROR", "خطا در ارسال پیام ${item.id}: ${e.message}", "SmsSender")
+                log("ERROR", "خطا در ارسال پیام", "SmsSender")
                 val retryCount = item.retryCount + 1
                 if (retryCount >= 3) {
                     smsQueueDao.update(item.copy(status = "FAILED", retryCount = retryCount, errorMessage = e.message))
@@ -421,8 +421,7 @@ class SmsRepository(private val context: Context) {
                     payload = payload
                 )
             } catch (e: Exception) {
-                // Squelch background errors but log
-                e.printStackTrace()
+                // Keep background failures out of persistent logs.
             }
         }
     }

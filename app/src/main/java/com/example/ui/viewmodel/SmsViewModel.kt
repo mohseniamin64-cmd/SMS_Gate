@@ -91,7 +91,7 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
             }
         } catch (e: Exception) {
             viewModelScope.launch {
-                repository.log("ERROR", "خطا در شروع سرویس پس‌زمینه: ${e.message}", "ViewModel")
+                repository.log("ERROR", "خطا در شروع سرویس پس‌زمینه", "ViewModel")
             }
         }
     }
@@ -100,8 +100,8 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val intent = Intent(context, SmsGatewayService::class.java).apply { action = "STOP" }
             context.startService(intent)
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
+            // Keep service-start failures out of logcat.
         }
     }
 
@@ -155,7 +155,7 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
                 status = "PENDING"
             )
             repository.smsQueueDao.insert(newItem)
-            repository.log("INFO", "پیامک دستی به صف اضافه شد: به $phoneNumber", "ViewModel")
+            repository.log("INFO", "پیامک دستی به صف اضافه شد", "ViewModel")
             _toastMessage.value = "پیامک با موفقیت در صف ارسال قرار گرفت"
 
             // Process immediately if service/gateway is enabled

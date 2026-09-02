@@ -36,6 +36,18 @@ class SmsSyncPlannerTest {
         )
         assertTrue(resurrectionAttempt.newMessages.isEmpty())
         assertTrue(resurrectionAttempt.deletedMessages.isEmpty())
+
+        val genuinelyNewMessageFromSameContact = fourMessages[1].copy(
+            id = 23L,
+            date = 5_000L,
+            body = "new message"
+        )
+        val sameContactNewMessage = plan(
+            local = remaining,
+            provider = remaining + genuinelyNewMessageFromSameContact,
+            tombstones = tombstones
+        )
+        assertEquals(listOf(genuinelyNewMessageFromSameContact), sameContactNewMessage.newMessages)
     }
 
     @Test

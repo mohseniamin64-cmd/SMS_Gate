@@ -16,3 +16,6 @@
 local.properties
 .env
 debug.keystore
+backend/call_logs.db
+backend/__pycache__/
+backend/**/__pycache__/

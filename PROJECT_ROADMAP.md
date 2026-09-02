@@ -1,7 +1,7 @@
 # دفتر کار و نقشه‌راه پروژه SMS Center Android Gateway
 
-آخرین به‌روزرسانی: 2026-09-01
-وضعیت کل: نسخه اولیه؛ آماده استفاده عملیاتی نیست.
+آخرین به‌روزرسانی: 2026-09-02
+وضعیت کل: MVP نرم‌افزاری build/test شده؛ آمادهٔ نصب آزمایشی، تأیید دستگاه واقعی باقی است.
 
 ## ۱. روش استفاده
 
@@ -573,3 +573,17 @@
 - بررسی ساختاری: ۶ تست با annotation `@Test` شناسایی شد؛ assertion نام برنامه و تنظیمات foreground معتبر هستند؛ `git diff --check` موفق است.
 - Build/test: `:app:testDebugUnitTest` و `:app:assembleDebug` قابل اجرا نبودند چون `gradlew.bat` و Gradle سراسری در محیط وجود ندارند. workflow CI کم‌ریسک در commit قبلی اضافه شده است.
 - انتشار: commit بعدی محلی ثبت می‌شود اما تا سبزشدن هر دو task، push جدید انجام نمی‌شود.
+### رکورد ۰۰۷ — MVP یکپارچه، Build و Verification
+
+- تاریخ: 2026-09-02
+- شاخه: `codex/mvp-integration`؛ پایهٔ public branch در commit `ca1c463d434f3cc3e89f18484159dd0737e3b424`.
+- Android: خواندن مستقیم Inbox/Sent، تفکیک direction، SIM از subscription، fingerprint SHA-256، tombstone، queue، ارسال single/multipart، delivery callback، LAN health و webhook HMAC پیاده‌سازی شد.
+- UI: داشبورد فارسی RTL، navigation stack و Back، Inbox/Sent/Conversation، Send، Queue/Logs، Contacts محلی و Call Log واقعی با search/filter و ACTION_DIAL اضافه شد.
+- Call Log: Room migration نسخهٔ ۲، outbox/retry، sync batch idempotent و API فیلترشونده در `backend/app.py` اضافه شد؛ نام مخاطب فقط local است و upload نمی‌شود.
+- Build: `:app:compileDebugKotlin` و `:app:assembleDebug` با Gradle 9.3.1، JDK 17 و SDK 36 موفق شدند؛ debug از signing پیش‌فرض Android استفاده می‌کند.
+- Android tests: `:app:testDebugUnitTest` موفق، 17 تست.
+- Backend tests: `python -m pytest backend/tests -q` موفق، 5 تست.
+- تست‌های نمایشی Greeting و فایل screenshot حذف شدند؛ هیچ تستی برای پنهان‌کردن failure غیرفعال نشد.
+- محدودیت‌های تأییدنشده: گوشی واقعی، Default SMS Role، Dual-SIM واقعی، Delivery واقعی، Doze/Battery و اجرای ۷۲ ساعته.
+- وضعیت: MVP نرم‌افزاری انجام شد؛ آمادهٔ نصب آزمایشی، نه تأیید production.
+- گام بعدی: نصب APK و اجرای سناریوهای Permission، دریافت/ارسال، حذف/Restart، Dual-SIM و Call Log روی دستگاه واقعی.

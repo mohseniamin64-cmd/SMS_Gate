@@ -1,8 +1,13 @@
 package com.example.service
 
-import android.app.*
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.net.Uri
@@ -10,18 +15,25 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import com.example.R
-import com.example.data.local.AppDatabase
+import androidx.core.content.ContextCompat
+import com.example.data.repository.CallLogRepository
 import com.example.data.repository.SmsRepository
-import kotlinx.coroutines.*
+import com.example.R
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class SmsGatewayService : Service() {
-
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
-
     private lateinit var repository: SmsRepository
     private var syncJob: Job? = null
     private var isRunning = false
@@ -30,7 +42,7 @@ class SmsGatewayService : Service() {
         override fun onChange(selfChange: Boolean, uri: Uri?) {
             super.onChange(selfChange, uri)
             serviceScope.launch(Dispatchers.IO) {
-                repository.log("INFO", "تشخیص تغییر در دیتابیس پیامک‌های سیستم. شروع همگام‌سازی...", "ContentObserver")
+                repository.log("INFO", "تغییر Provider پیامک تشخیص داده شد", "ContentObserver")
                 repository.syncInboxAndDetectDeletions()
             }
         }
@@ -40,37 +52,26 @@ class SmsGatewayService : Service() {
         super.onCreate()
         repository = SmsRepository(this)
         createNotificationChannel()
-
-        // Register ContentObserver on system SMS database
         try {
-            contentResolver.registerContentObserver(
-                Uri.parse("content://sms/"),
-                true,
-                smsObserver
-            )
+            contentResolver.registerContentObserver(Uri.parse("content://sms/"), true, smsObserver)
             serviceScope.launch {
-                repository.log("INFO", "شنودگر تغییرات دیتابیس پیامک (ContentObserver) با موفقیت ثبت شد", "Service")
+                repository.log("INFO", "شنودگر Provider پیامک ثبت شد", "Service")
             }
-        } catch (e: Exception) {
-            serviceScope.launch {
-                repository.log("ERROR", "خطا در ثبت ContentObserver", "Service")
-            }
+        } catch (_: Exception) {
+            serviceScope.launch { repository.log("ERROR", "ثبت شنودگر پیامک ناموفق بود", "Service") }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val action = intent?.action
-        if (action == "STOP") {
-            stopService()
+        if (intent?.action == "STOP") {
+            stopGatewayService()
             return START_NOT_STICKY
         }
-
         if (!isRunning) {
             isRunning = true
             startForegroundNotification()
             startPeriodicSync()
         }
-
         return START_STICKY
     }
 
@@ -82,25 +83,21 @@ class SmsGatewayService : Service() {
             stopIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
-        // Make notification click return to app
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        val pendingIntent = PendingIntent.getActivity(
+        val launchPendingIntent = PendingIntent.getActivity(
             this,
             1,
             launchIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("درگاه پیامک SMS Center فعال است")
-            .setContentText("در حال شنود دیتابیس و پردازش صف پیامک‌ها در پس‌زمینه...")
+            .setContentText("در حال همگام‌سازی Provider و صف پیامک")
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentIntent(pendingIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "غیرفعال‌سازی درگاه", stopPendingIntent)
+            .setContentIntent(launchPendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "غیرفعال‌سازی", stopPendingIntent)
             .setOngoing(true)
             .build()
-
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
@@ -112,58 +109,75 @@ class SmsGatewayService : Service() {
     private fun startPeriodicSync() {
         syncJob?.cancel()
         syncJob = serviceScope.launch {
-            repository.log("INFO", "سرویس پس‌زمینه درگاه پیامک راه‌اندازی شد", "Service")
+            repository.log("INFO", "سرویس پس‌زمینه Gateway شروع شد", "Service")
             while (isActive) {
                 val settings = repository.settingsDao.getSettings()
-                if (settings != null && settings.isGatewayEnabled) {
-                    // 1. Fetch pending from Web Panel
+                if (settings?.isGatewayEnabled == true) {
                     repository.pollPendingMessagesFromServer()
-
-                    // 2. Process Outbox Send
                     repository.processOutgoingQueue()
-
-                    // 3. Keep Inbox fully synced
                     repository.syncInboxAndDetectDeletions()
-
-                    val delaySecs = if (settings.syncIntervalSeconds > 5) settings.syncIntervalSeconds else 30
-                    delay(delaySecs * 1000L)
+                    if (
+                        settings.callLogSyncEnabled &&
+                        ContextCompat.checkSelfPermission(
+                            this@SmsGatewayService,
+                            Manifest.permission.READ_CALL_LOG
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        val calls = CallLogRepository(this@SmsGatewayService)
+                        calls.refreshFromProvider(settings.deviceId)
+                        calls.syncPending(settings)
+                    }
+                    val delaySeconds = settings.syncIntervalSeconds.coerceAtLeast(5)
+                    delay(delaySeconds * 1000L)
                 } else {
-                    // Idle if gateway is disabled
-                    delay(10000)
+                    delay(10_000)
                 }
             }
         }
     }
 
-    private fun stopService() {
+    private fun stopGatewayService() {
         serviceScope.launch {
-            repository.log("INFO", "سرویس پس‌زمینه متوقف شد", "Service")
             repository.settingsDao.getSettings()?.let {
                 repository.settingsDao.saveSettings(it.copy(isGatewayEnabled = false))
             }
-            stopForeground(true)
+            repository.log("INFO", "سرویس پس‌زمینه متوقف شد", "Service")
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    override fun onTimeout(startId: Int) {
+        syncJob?.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        syncJob?.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
+
     override fun onDestroy() {
-        super.onDestroy()
-        contentResolver.unregisterContentObserver(smsObserver)
+        runCatching { contentResolver.unregisterContentObserver(smsObserver) }
         syncJob?.cancel()
         serviceJob.cancel()
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val serviceChannel = NotificationChannel(
+            val channel = NotificationChannel(
                 CHANNEL_ID,
                 "سرویس درگاه پیامک",
                 NotificationManager.IMPORTANCE_LOW
             )
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(serviceChannel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 

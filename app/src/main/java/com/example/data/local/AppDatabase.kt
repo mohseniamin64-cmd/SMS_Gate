@@ -2,7 +2,23 @@ package com.example.data.local
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
 import kotlinx.coroutines.flow.Flow
+import java.security.MessageDigest
+
+enum class SmsDirection(val storageValue: String) {
+    INCOMING("INCOMING"),
+    OUTGOING("OUTGOING"),
+    UNKNOWN("UNKNOWN");
+
+    companion object {
+        fun fromTelephonyType(type: Int): SmsDirection = when (type) {
+            1 -> INCOMING
+            2 -> OUTGOING
+            else -> UNKNOWN
+        }
+    }
+}
 
 // -------------------------------------------------------------------------
 // ENTITIES
@@ -10,35 +26,43 @@ import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "gateway_settings")
 data class GatewaySettings(
-    @PrimaryKey val id: Int = 1, // Only one settings row
+    @PrimaryKey val id: Int = 1,
     val serverUrl: String = "",
     val apiKey: String = "",
     val deviceId: String = "android_gateway",
-    val simSlotSelection: Int = -1, // -1: default, 0: SIM1, 1: SIM2
+    val simSlotSelection: Int = -1,
     val syncIntervalSeconds: Int = 30,
     val webhookUrl: String = "",
     val webhookSecret: String = "",
-    val isTestMode: Boolean = true, // Default to true for safety
+    val isTestMode: Boolean = true,
     val limitSmsPerDay: Int = 500,
     val limitSmsPerHour: Int = 100,
     val limitSmsPerMin: Int = 5,
-    val workingHoursStart: String = "00:00", // "HH:mm"
+    val workingHoursStart: String = "00:00",
     val workingHoursEnd: String = "23:59",
-    val isGatewayEnabled: Boolean = false
+    val isGatewayEnabled: Boolean = false,
+    val autostartEnabled: Boolean = false,
+    val callLogSyncEnabled: Boolean = false
 )
 
 @Entity(tableName = "synced_sms")
 data class SyncedSms(
-    @PrimaryKey val id: Long, // Matches the Android SMS _id
+    @PrimaryKey val id: Long,
     val address: String,
     val body: String,
     val date: Long,
     val simSlot: Int,
+    val direction: String = SmsDirection.UNKNOWN.storageValue,
     val syncedAt: Long = System.currentTimeMillis()
 ) {
-    // Generate simple content fingerprint to prevent duplicates or identify deletion tombstones
-    fun getFingerprint(): String {
-        return "${address}_${date}_${body.hashCode()}"
+    fun getFingerprint(): String = sha256("$address\u0000$date\u0000$body")
+
+    /** Allows old tombstones written with the pre-MVP hash to remain effective. */
+    fun getLegacyFingerprint(): String = "${address}_${date}_${body.hashCode()}"
+
+    private fun sha256(value: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        return digest.digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 }
 
@@ -53,11 +77,11 @@ data class Tombstone(
 @Entity(tableName = "sms_queue")
 data class SmsQueueItem(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val requestId: String, // Prevent double processing
+    val requestId: String,
     val phoneNumber: String,
     val messageBody: String,
-    val simSlot: Int, // 0 for SIM1, 1 for SIM2, -1 for default
-    val status: String, // PENDING, PROCESSING, SENT, DELIVERED, FAILED, CANCELLED
+    val simSlot: Int,
+    val status: String,
     val retryCount: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val scheduledAt: Long = 0,
@@ -69,9 +93,23 @@ data class SmsQueueItem(
 data class LogEntry(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val timestamp: Long = System.currentTimeMillis(),
-    val level: String, // INFO, WARN, ERROR
+    val level: String,
     val message: String,
     val tag: String
+)
+
+@Entity(tableName = "call_log_upload_queue", primaryKeys = ["deviceId", "callId"])
+data class CallLogUploadItem(
+    val deviceId: String,
+    val callId: String,
+    val number: String,
+    val contactName: String?,
+    val timestamp: Long,
+    val durationSeconds: Long,
+    val type: String,
+    val attemptCount: Int = 0,
+    val lastError: String? = null,
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 // -------------------------------------------------------------------------
@@ -92,10 +130,10 @@ interface GatewaySettingsDao {
 
 @Dao
 interface SyncedSmsDao {
-    @Query("SELECT * FROM synced_sms")
+    @Query("SELECT * FROM synced_sms ORDER BY date DESC, id DESC")
     fun getAllSyncedFlow(): Flow<List<SyncedSms>>
 
-    @Query("SELECT * FROM synced_sms")
+    @Query("SELECT * FROM synced_sms ORDER BY date DESC, id DESC")
     suspend fun getAllSynced(): List<SyncedSms>
 
     @Query("SELECT id FROM synced_sms")
@@ -171,9 +209,51 @@ interface LogDao {
     suspend fun clearLogs()
 }
 
+@Dao
+interface CallLogUploadDao {
+    @Query("SELECT * FROM call_log_upload_queue WHERE deviceId = :deviceId ORDER BY timestamp ASC LIMIT :limit")
+    suspend fun getPending(deviceId: String, limit: Int = 500): List<CallLogUploadItem>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAll(items: List<CallLogUploadItem>)
+
+    @Query("DELETE FROM call_log_upload_queue WHERE deviceId = :deviceId AND callId IN (:callIds)")
+    suspend fun deleteUploaded(deviceId: String, callIds: List<String>)
+
+    @Query("UPDATE call_log_upload_queue SET attemptCount = attemptCount + 1, lastError = :error WHERE deviceId = :deviceId AND callId IN (:callIds)")
+    suspend fun recordFailure(deviceId: String, callIds: List<String>, error: String)
+
+    @Query("SELECT COUNT(*) FROM call_log_upload_queue WHERE deviceId = :deviceId")
+    fun pendingCountFlow(deviceId: String): Flow<Int>
+}
+
 // -------------------------------------------------------------------------
 // DATABASE
 // -------------------------------------------------------------------------
+
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE gateway_settings ADD COLUMN autostartEnabled INTEGER NOT NULL DEFAULT 0")
+        database.execSQL("ALTER TABLE gateway_settings ADD COLUMN callLogSyncEnabled INTEGER NOT NULL DEFAULT 0")
+        database.execSQL("ALTER TABLE synced_sms ADD COLUMN direction TEXT NOT NULL DEFAULT 'UNKNOWN'")
+        database.execSQL(
+            """CREATE TABLE IF NOT EXISTS call_log_upload_queue (
+                deviceId TEXT NOT NULL,
+                callId TEXT NOT NULL,
+                number TEXT NOT NULL,
+                contactName TEXT,
+                timestamp INTEGER NOT NULL,
+                durationSeconds INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                attemptCount INTEGER NOT NULL DEFAULT 0,
+                lastError TEXT,
+                createdAt INTEGER NOT NULL,
+                PRIMARY KEY(deviceId, callId)
+            )""".trimIndent()
+        )
+        database.execSQL("CREATE INDEX IF NOT EXISTS index_call_log_upload_queue_deviceId_timestamp ON call_log_upload_queue(deviceId, timestamp)")
+    }
+}
 
 @Database(
     entities = [
@@ -181,9 +261,10 @@ interface LogDao {
         SyncedSms::class,
         Tombstone::class,
         SmsQueueItem::class,
-        LogEntry::class
+        LogEntry::class,
+        CallLogUploadItem::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -192,6 +273,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun tombstoneDao(): TombstoneDao
     abstract fun smsQueueDao(): SmsQueueDao
     abstract fun logDao(): LogDao
+    abstract fun callLogUploadDao(): CallLogUploadDao
 
     companion object {
         @Volatile
@@ -199,14 +281,14 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
+                INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "sms_center_db"
                 )
-                .build()
-                INSTANCE = instance
-                instance
+                    .addMigrations(MIGRATION_1_2)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }

@@ -58,7 +58,6 @@ class SmsRepository(private val context: Context) {
 
         log("INFO", "شروع همگام‌سازی پیامک‌ها و تشخیص حذف‌ها...", "InboxSync")
 
-        // 1. Check permissions
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
             log("WARN", "مجوز READ_SMS وجود ندارد", "InboxSync")
             return@withContext SyncResult(false, "مجوز دسترسی به پیامک‌ها داده نشده است")
@@ -67,128 +66,119 @@ class SmsRepository(private val context: Context) {
         try {
             val contentResolver = context.contentResolver
             val uri = Uri.parse("content://sms/")
-
-            // Query SMS from last 7 days to avoid heavy load
-            val sevenDaysAgo = System.currentTimeMillis() - (7 * 24 * 60 * 60 * 1000)
-            val selection = "date >= ?"
-            val selectionArgs = arrayOf(sevenDaysAgo.toString())
+            // Deletion comparison requires the complete provider history.
+            // A time-limited query can make older deleted messages reappear.
             val projection = arrayOf("_id", "address", "body", "date", "type")
-
-            val cursor = contentResolver.query(uri, projection, selection, selectionArgs, "date DESC")
+            val cursor = contentResolver.query(uri, projection, null, null, "date DESC")
+                ?: return@withContext SyncResult(false, "snapshot پیامک‌ها معتبر نیست")
             val systemSmsMap = mutableMapOf<Long, SyncedSms>()
 
-            cursor?.use {
-                val idIdx = it.getColumnIndexOrThrow("_id")
-                val addressIdx = it.getColumnIndexOrThrow("address")
-                val bodyIdx = it.getColumnIndexOrThrow("body")
-                val dateIdx = it.getColumnIndexOrThrow("date")
-                val typeIdx = it.getColumnIndexOrThrow("type")
+            // Publish the map to the diff only after the cursor is fully read.
+            // Any read error makes this snapshot invalid and skips deletions.
+            try {
+                cursor.use {
+                    val idIdx = it.getColumnIndexOrThrow("_id")
+                    val addressIdx = it.getColumnIndexOrThrow("address")
+                    val bodyIdx = it.getColumnIndexOrThrow("body")
+                    val dateIdx = it.getColumnIndexOrThrow("date")
+                    val typeIdx = it.getColumnIndexOrThrow("type")
 
-                while (it.moveToNext()) {
-                    val id = it.getLong(idIdx)
-                    val address = it.getString(addressIdx) ?: ""
-                    val body = it.getString(bodyIdx) ?: ""
-                    val date = it.getLong(dateIdx)
-                    val type = it.getInt(typeIdx) // 1 = Inbox, 2 = Sent
+                    while (it.moveToNext()) {
+                        val id = it.getLong(idIdx)
+                        val address = it.getString(addressIdx) ?: ""
+                        val body = it.getString(bodyIdx) ?: ""
+                        val date = it.getLong(dateIdx)
+                        val type = it.getInt(typeIdx) // 1 = Inbox, 2 = Sent
 
-                    // Only track inbox and sent messages
-                    if (type == 1 || type == 2) {
-                        systemSmsMap[id] = SyncedSms(
-                            id = id,
-                            address = address,
-                            body = body,
-                            date = date,
-                            simSlot = type // Just record type as simSlot indicator for simplicity
-                        )
+                        if (type == 1 || type == 2) {
+                            systemSmsMap[id] = SyncedSms(
+                                id = id,
+                                address = address,
+                                body = body,
+                                date = date,
+                                simSlot = type // Just record type as simSlot indicator for simplicity
+                            )
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                log("WARN", "snapshot پیامک‌ها کامل خوانده نشد؛ حذف بررسی نشد", "InboxSync")
+                return@withContext SyncResult(false, "snapshot پیامک‌ها معتبر نیست")
             }
 
-            // 2. Load our local cached synced messages list
             val localSyncedList = syncedSmsDao.getAllSynced()
-            val localSyncedMap = localSyncedList.associateBy { it.id }
+            val tombstoneKeys = tombstoneDao.getAllTombstones()
+                .mapTo(mutableSetOf()) { SmsTombstoneKey(it.address, it.date, it.fingerprint) }
+            val plan = SmsSyncPlanner.plan(
+                localMessages = localSyncedList,
+                providerSnapshot = SmsProviderSnapshot(systemSmsMap, isComplete = true),
+                tombstones = tombstoneKeys
+            )
 
             var newIncomingCount = 0
             var deletedCount = 0
 
-            // 3. Find NEW messages (In system SMS list but NOT in local synced list)
-            for ((id, systemSms) in systemSmsMap) {
-                if (!localSyncedMap.containsKey(id)) {
-                    // Check if this message was previously tombstoned (already deleted)
-                    val fingerprint = systemSms.getFingerprint()
-                    val isTombstoned = tombstoneDao.isTombstoned(systemSms.address, systemSms.date, fingerprint) > 0
+            for (systemSms in plan.newMessages) {
+                val fingerprint = systemSms.getFingerprint()
+                log("INFO", "پیام جدید دریافت شد: از ${systemSms.address}", "InboxSync")
+                val payload = WebhookPayload(
+                    event = "sms_received",
+                    deviceId = settings.deviceId,
+                    from = systemSms.address,
+                    body = systemSms.body,
+                    timestamp = systemSms.date,
+                    simSlot = systemSms.simSlot,
+                    fingerprint = fingerprint
+                )
 
-                    if (!isTombstoned) {
-                        // This is a new incoming message! Forward it to Webhook
-                        log("INFO", "پیام جدید دریافت شد: از ${systemSms.address}", "InboxSync")
-                        val payload = WebhookPayload(
-                            event = "sms_received",
-                            deviceId = settings.deviceId,
-                            from = systemSms.address,
-                            body = systemSms.body,
-                            timestamp = systemSms.date,
-                            simSlot = systemSms.simSlot,
-                            fingerprint = fingerprint
-                        )
-
-                        val isSuccess = SmsApiClient.sendWebhook(settings.webhookUrl, settings.webhookSecret, payload)
-                        if (isSuccess) {
-                            log("INFO", "پیام با موفقیت به وب‌هوک ارسال شد", "InboxSync")
-                        } else {
-                            log("WARN", "خطا در ارسال پیام به وب‌هوک", "InboxSync")
-                        }
-
-                        // Save in local DB as synced anyway so we don't spam
-                        syncedSmsDao.insert(systemSms)
-                        newIncomingCount++
-                    }
+                val isSuccess = SmsApiClient.sendWebhook(settings.webhookUrl, settings.webhookSecret, payload)
+                if (isSuccess) {
+                    log("INFO", "پیام با موفقیت به وب‌هوک ارسال شد", "InboxSync")
+                } else {
+                    log("WARN", "خطا در ارسال پیام به وب‌هوک", "InboxSync")
                 }
+
+                // Save in local DB as synced anyway so we don't spam.
+                syncedSmsDao.insert(systemSms)
+                newIncomingCount++
             }
 
-            // 4. Find DELETED messages (In our local synced list but NOT in the system SMS database anymore)
-            // Limit to messages newer than 7 days ago to avoid stale comparisons
-            for (localSms in localSyncedList) {
-                if (localSms.date >= sevenDaysAgo && !systemSmsMap.containsKey(localSms.id)) {
-                    // Message was deleted from the device!
-                    log("INFO", "تشخیص حذف پیامک: فرستنده ${localSms.address}", "InboxSync")
-                    
-                    val fingerprint = localSms.getFingerprint()
-                    
-                    // Create Tombstone so we don't restore it
-                    tombstoneDao.insert(
-                        Tombstone(
-                            address = localSms.address,
-                            date = localSms.date,
-                            fingerprint = fingerprint
-                        )
-                    )
+            for (localSms in plan.deletedMessages) {
+                // Only local sync state is removed; the Android SMS Provider is
+                // never modified by this sync path.
+                log("INFO", "تشخیص حذف پیامک: فرستنده ${localSms.address}", "InboxSync")
+                val fingerprint = localSms.getFingerprint()
 
-                    // Post deletion event to webhook
-                    val payload = WebhookPayload(
-                        event = "sms_deleted",
-                        deviceId = settings.deviceId,
-                        from = localSms.address,
-                        timestamp = localSms.date,
+                // Create Tombstone before removing active sync state.
+                tombstoneDao.insert(
+                    Tombstone(
+                        address = localSms.address,
+                        date = localSms.date,
                         fingerprint = fingerprint
                     )
-                    
-                    SmsApiClient.sendWebhook(settings.webhookUrl, settings.webhookSecret, payload)
+                )
 
-                    // Remove from active synced list
-                    syncedSmsDao.deleteById(localSms.id)
-                    deletedCount++
-                }
+                val payload = WebhookPayload(
+                    event = "sms_deleted",
+                    deviceId = settings.deviceId,
+                    from = localSms.address,
+                    timestamp = localSms.date,
+                    fingerprint = fingerprint
+                )
+                SmsApiClient.sendWebhook(settings.webhookUrl, settings.webhookSecret, payload)
+
+                // Remove only local sync state; never delete the phone SMS.
+                syncedSmsDao.deleteById(localSms.id)
+                deletedCount++
             }
 
             log("INFO", "همگام‌سازی پایان یافت. جدید: $newIncomingCount، حذف شده: $deletedCount", "InboxSync")
             return@withContext SyncResult(true, "همگام‌سازی موفق. پیام‌های جدید: $newIncomingCount، حذف‌شده: $deletedCount")
-
         } catch (e: Exception) {
             log("ERROR", "خطا در همگام‌سازی پیامک‌ها: ${e.message}", "InboxSync")
             return@withContext SyncResult(false, "خطا در پردازش: ${e.message}")
         }
     }
-
     // -------------------------------------------------------------------------
     // QUEUE POLLING & MESSAGE SENDING ENGINE
     // -------------------------------------------------------------------------

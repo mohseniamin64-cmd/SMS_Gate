@@ -526,3 +526,14 @@
 - تصمیم معماری: تشخیص حذف فقط بر اساس snapshot کامل Provider مجاز است؛ API و Backend بدون تغییر باقی ماندند؛ fallback مهاجرت مخرب حذف شد.
 - وضعیت: پیاده‌سازی انجام شد؛ تأیید build/test محیطی باقی‌مانده است.
 - گام بعدی: اجرای `:app:testDebugUnitTest` و build در محیط CI یا Android Studio، سپس تست Provider روی گوشی واقعی.
+### رکورد ۰۰۳ — UI یکپارچه نسخه اولیه و navigation
+
+- تاریخ: 2026-09-02
+- مرحله: ۱۳ — UI فارسی
+- هدف: navigation یکپارچه Compose برای داشبورد، Inbox، Sent، Queue، Contacts، Gateway و Settings با حفظ Send و Logs.
+- فایل‌های تغییرکرده: app/src/main/java/com/example/MainActivity.kt
+- نتیجه: drawer navigation، RTL فارسی، وضعیت اتصال Gateway، حالت تست، مجوز، loading در همگام‌سازی، empty/disabled/error، جست‌وجو و فیلتر صف، status label/color و Settings wiring اضافه شد.
+- محدودیت صریح: SyncedSms در قرارداد فعلی جهت پیام را ندارد؛ Inbox/Sent موقتاً بر اساس convention فعلی type=1/2 (در فیلد simSlot) نمایش داده می‌شوند. Contacts به‌دلیل نبود data source فقط TODO شفاف دارد.
+- تست: :app:testDebugUnitTest اجرا شد اما baseline پیش از compile به‌دلیل resolve نشدن com.android.application:9.1.1 متوقف شد.
+- وضعیت: UI انجام شد؛ Build و smoke test به‌دلیل blocker محیط/Dependency تأیید نشد.
+- گام بعدی: رفع نسخه یا دسترسی Android Gradle Plugin، سپس اجرای build و screenshot smoke روی شاخه UI.

@@ -21,21 +21,16 @@ class SmsReceiver : BroadcastReceiver() {
                     val repo = SmsRepository(context)
                     repo.log("INFO", "پیامک جدید در سیستم دریافت شد. اجرای همگام‌سازی...", "SmsReceiver")
 
-                    // Also extract direct info from intent to ensure immediate processing
+                    // Keep the receiver event observable without persisting PII or message text.
                     val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
                     if (messages.isNotEmpty()) {
-                        val firstMsg = messages[0]
-                        val sender = firstMsg.originatingAddress ?: ""
-                        val fullBody = messages.joinToString("") { it.messageBody ?: "" }
-                        val timestamp = System.currentTimeMillis()
-
-                        repo.log("INFO", "دریافت مستقیم از: $sender", "SmsReceiver")
+                        repo.log("INFO", "پیامک مستقیم دریافت شد", "SmsReceiver")
                     }
 
                     // Run the comprehensive alignment sync
                     repo.syncInboxAndDetectDeletions()
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                } catch (_: Exception) {
+                    // Do not print SMS contents or provider details to logcat.
                 } finally {
                     pendingResult.finish()
                 }

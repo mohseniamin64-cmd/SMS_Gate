@@ -53,8 +53,8 @@ class SmsSentDeliveredReceiver : BroadcastReceiver() {
                         repo.notifyStatusChange(settings, item.requestId, "DELIVERED", null)
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (_: Exception) {
+                // Do not print SMS or provider details to logcat.
             } finally {
                 pendingResult.finish()
             }

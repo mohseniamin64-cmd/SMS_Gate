@@ -550,3 +550,16 @@
 - بررسی‌ها: `git diff --check` و اسکن markerهای merge موفق است؛ گزارش امنیتیِ بدون فایل یا Diff وارد کد نشد.
 - Build/test: اجرا نشد؛ clone فاقد `gradlew.bat` است و Gradle سراسری نیز نصب نیست. Java 21 و `ANDROID_SDK=C:\Android\sdk` موجود است، اما بدون Gradle امکان resolve dependency یا اجرای `:app:compileDebugKotlin` و `:app:testDebugUnitTest` وجود ندارد.
 - گام بعدی انتشار: اجرای build و unit test در CI یا Android Studio دارای Gradle/Android SDK، سپس push همین شاخه و تست Provider روی گوشی واقعی.
+
+### رکورد ۰۰۵ — اصلاحات امنیتی P0 و CI انتشار
+
+- تاریخ: 2026-09-02
+- شاخه: `codex/mvp-integration`، ادامه از commit `45134c7596e7555a7d2619028458c2c94d626bdb`.
+- لاگ امن: سطح HTTP logging از `BODY` به `NONE` تغییر کرد؛ متن پیام، شماره، آدرس و stack trace از لاگ‌های پایدار/Logcat حذف شد.
+- foreground service: permission `FOREGROUND_SERVICE_DATA_SYNC`، attribute `foregroundServiceType="dataSync"` و typed `ServiceCompat.startForeground` اضافه شد.
+- backup امن: `allowBackup=false` شد و دیتابیس Room در cloud backup و device transfer با rules صریحاً مستثنا شد.
+- محدوده حفظ شد: endpointها، API contract، SMS Provider، entity/schema/version دیتابیس و منطق کسب‌وکار تغییر نکردند.
+- CI: فایل `.github/workflows/android-ci.yml` اضافه شد؛ Gradle `9.3.1`، Java `17`، Android SDK `36.1` و Build Tools `36.0.0` را آماده و `:app:testDebugUnitTest` و `:app:assembleDebug` را اجرا می‌کند.
+- بررسی‌ها: XML structural validation، scan لاگ حساس، scan حذف `BODY`/`printStackTrace` و `git diff --check` موفق شدند.
+- Build محلی: قابل اجرا نبود؛ `gradlew.bat` و Gradle سراسری در محیط موجود نیستند. نتیجهٔ واقعی build باید از GitHub Actions/Android Studio ثبت شود.
+- بازبینی امنیتی مستقل: سه blocker P0 شناسایی شد و هر سه در working tree اصلاح شدند؛ هیچ فایل امنیتی حدسی یا گزارشِ بدون Diff وارد نشد.

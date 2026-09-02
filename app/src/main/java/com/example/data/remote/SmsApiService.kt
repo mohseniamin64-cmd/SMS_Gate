@@ -81,7 +81,7 @@ object SmsApiClient {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
-        level = HttpLoggingInterceptor.Level.BODY
+        level = HttpLoggingInterceptor.Level.NONE
     }
 
     private val okHttpClient = OkHttpClient.Builder()
@@ -128,8 +128,7 @@ object SmsApiClient {
             okHttpClient.newCall(request).execute().use { response ->
                 response.isSuccessful
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
             false
         }
     }

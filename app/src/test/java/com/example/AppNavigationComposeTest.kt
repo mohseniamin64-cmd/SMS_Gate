@@ -42,7 +42,6 @@ class AppNavigationComposeTest {
     private fun NavigationHarness() {
         val navigation = rememberAppNavigationState()
         var recompositionCount by remember { mutableStateOf(0) }
-        AppNavigationBackHandler(navigation)
         Column {
             Text(AppDestination.from(navigation.currentRoute.destinationKey).key)
             Button(onClick = { navigation.navigateTo(AppDestination.SETTINGS) }) { Text("open settings") }

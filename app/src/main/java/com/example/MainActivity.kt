@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.SmsFailed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,8 +73,60 @@ class MainActivity : ComponentActivity() {
 enum class AppDestination(val key: String, val title: String, val icon: ImageVector) {
     DASHBOARD("dashboard", "داشبورد", Icons.Default.Dashboard), INBOX("inbox", "صندوق ورودی", Icons.Outlined.Inbox), SENT("sent", "ارسال‌شده", Icons.Outlined.Send),
     SEND("send", "ارسال پیام", Icons.Default.Send), QUEUE("queue", "صف ارسال", Icons.Default.ListAlt), CONTACTS("contacts", "مخاطبان", Icons.Default.Contacts),
-    GATEWAY("gateway", "وضعیت Gateway", Icons.Default.Router), SETTINGS("settings", "تنظیمات", Icons.Default.Settings), LOGS("logs", "گزارش‌ها", Icons.Default.Article);
+    GATEWAY("gateway", "وضعیت Gateway", Icons.Default.Router), SETTINGS("settings", "تنظیمات", Icons.Default.Settings), LOGS("logs", "گزارش‌ها", Icons.Default.Article),
+    CONVERSATION("conversation", "جزئیات گفتگو", Icons.Default.Message);
     companion object { fun from(key: String) = entries.firstOrNull { it.key == key } ?: DASHBOARD }
+}
+
+data class AppRoute(val destinationKey: String, val conversationId: Long? = null, val parentKey: String? = null)
+
+class AppNavigationState(initialStack: List<AppRoute> = listOf(AppRoute(AppDestination.DASHBOARD.key))) {
+    var backStack by mutableStateOf(initialStack)
+        private set
+
+    val currentRoute: AppRoute get() = backStack.last()
+    val canGoBack: Boolean get() = backStack.size > 1
+
+    /** Select a top-level destination without accumulating tab/menu history. */
+    fun navigateTo(destination: AppDestination) {
+        backStack = if (destination == AppDestination.DASHBOARD) {
+            listOf(AppRoute(AppDestination.DASHBOARD.key))
+        } else {
+            listOf(AppRoute(AppDestination.DASHBOARD.key), AppRoute(destination.key))
+        }
+    }
+
+    fun openConversation(messageId: Long, parent: AppDestination) {
+        backStack = listOf(
+            AppRoute(AppDestination.DASHBOARD.key),
+            AppRoute(parent.key),
+            AppRoute(AppDestination.CONVERSATION.key, messageId, parent.key)
+        )
+    }
+
+    fun pop() {
+        if (canGoBack) backStack = backStack.dropLast(1)
+    }
+
+    companion object {
+        val Saver: Saver<AppNavigationState, List<String>> = Saver(
+            save = { state -> state.backStack.map { route -> "${route.destinationKey}|${route.conversationId ?: ""}|${route.parentKey ?: ""}" } },
+            restore = { saved ->
+                AppNavigationState(saved.map { encoded ->
+                    val parts = encoded.split('|', limit = 3)
+                    AppRoute(parts[0], parts.getOrNull(1)?.toLongOrNull(), parts.getOrNull(2)?.ifBlank { null })
+                }.ifEmpty { listOf(AppRoute(AppDestination.DASHBOARD.key)) })
+            }
+        )
+    }
+}
+
+@Composable
+fun rememberAppNavigationState(): AppNavigationState = rememberSaveable(saver = AppNavigationState.Saver) { AppNavigationState() }
+
+@Composable
+fun AppNavigationBackHandler(navigation: AppNavigationState) {
+    BackHandler(enabled = navigation.canGoBack) { navigation.pop() }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -85,8 +139,11 @@ fun SmsGatewayAppScreen(viewModel: SmsViewModel, modifier: Modifier = Modifier, 
     val logs by viewModel.logsState.collectAsStateWithLifecycle()
     val syncing by viewModel.syncingState.collectAsStateWithLifecycle()
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
-    var selectedKey by rememberSaveable { mutableStateOf(AppDestination.DASHBOARD.key) }
-    val drawer = rememberDrawerState(DrawerValue.Closed); val scope = rememberCoroutineScope(); val selected = AppDestination.from(selectedKey)
+    val navigation = rememberAppNavigationState()
+    AppNavigationBackHandler(navigation)
+    val drawer = rememberDrawerState(DrawerValue.Closed); val scope = rememberCoroutineScope(); val selected = AppDestination.from(navigation.currentRoute.destinationKey)
+    val drawerSelection = AppDestination.from(navigation.currentRoute.parentKey ?: navigation.currentRoute.destinationKey)
+    val navigateTo = { destination: AppDestination -> navigation.navigateTo(destination) }
     LaunchedEffect(toast) { toast?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show(); viewModel.clearToast() } }
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
         ModalDrawerSheet(Modifier.width(300.dp)) {
@@ -98,7 +155,7 @@ fun SmsGatewayAppScreen(viewModel: SmsViewModel, modifier: Modifier = Modifier, 
                 Spacer(Modifier.height(18.dp)); GatewayStatusLabel(settings.isGatewayEnabled)
             }
             Divider()
-            AppDestination.entries.forEach { destination -> NavigationDrawerItem(label = { Text(destination.title) }, selected = destination == selected, onClick = { selectedKey = destination.key; scope.launch { drawer.close() } }, icon = { Icon(destination.icon, null) }, modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) }
+            AppDestination.entries.filter { it != AppDestination.CONVERSATION }.forEach { destination -> NavigationDrawerItem(label = { Text(destination.title) }, selected = destination == drawerSelection, onClick = { navigateTo(destination); scope.launch { drawer.close() } }, icon = { Icon(destination.icon, null) }, modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) }
         }
     }) {
         Scaffold(modifier.fillMaxSize(), topBar = {
@@ -106,15 +163,17 @@ fun SmsGatewayAppScreen(viewModel: SmsViewModel, modifier: Modifier = Modifier, 
         }) { padding ->
             Box(Modifier.padding(padding)) {
                 when (selected) {
-                    AppDestination.DASHBOARD -> DashboardPage(settings, messages.size, queue, syncing, viewModel::toggleGateway, viewModel::triggerManualSync, onGrantPermissions) { selectedKey = it.key }
-                    AppDestination.INBOX -> MessagesPage("صندوق ورودی", messages.filter { it.simSlot == 1 }, Icons.Outlined.Inbox, hasPermission(context, Manifest.permission.READ_SMS))
-                    AppDestination.SENT -> MessagesPage("ارسال‌شده", messages.filter { it.simSlot == 2 }, Icons.Outlined.Send, hasPermission(context, Manifest.permission.READ_SMS))
+                    AppDestination.DASHBOARD -> DashboardPage(settings, messages.size, queue, syncing, viewModel::toggleGateway, viewModel::triggerManualSync, onGrantPermissions, navigateTo)
+                    AppDestination.INBOX -> MessagesPage("صندوق ورودی", messages.filter { it.simSlot == 1 }, Icons.Outlined.Inbox, hasPermission(context, Manifest.permission.READ_SMS)) { navigation.openConversation(it.id, AppDestination.INBOX) }
+                    AppDestination.SENT -> MessagesPage("ارسال‌شده", messages.filter { it.simSlot == 2 }, Icons.Outlined.Send, hasPermission(context, Manifest.permission.READ_SMS)) { navigation.openConversation(it.id, AppDestination.SENT) }
                     AppDestination.SEND -> SendPage(viewModel::enqueueManualSms, settings.isTestMode, settings.isGatewayEnabled)
                     AppDestination.QUEUE -> QueuePage(queue, viewModel::clearHistory)
                     AppDestination.CONTACTS -> EmptyState(Icons.Outlined.ContactPhone, "مخاطبان هنوز آماده نیست", "مدل مخاطب و منبع داده در قرارداد فعلی وجود ندارد.", "TODO: پس از تعریف Contacts data source اضافه شود.")
-                    AppDestination.GATEWAY -> GatewayPage(settings, syncing, viewModel::toggleGateway, viewModel::triggerManualSync, onGrantPermissions) { selectedKey = AppDestination.SETTINGS.key }
+                    AppDestination.GATEWAY -> GatewayPage(settings, syncing, viewModel::toggleGateway, viewModel::triggerManualSync, onGrantPermissions) { navigateTo(AppDestination.SETTINGS) }
                     AppDestination.SETTINGS -> SettingsPage(settings, viewModel::saveSettings)
                     AppDestination.LOGS -> LogsPage(logs, viewModel::clearSystemLogs)
+                    AppDestination.CONVERSATION -> navigation.currentRoute.conversationId?.let { id -> messages.firstOrNull { it.id == id } }?.let { ConversationPage(it) }
+                        ?: EmptyState(Icons.Default.Message, "گفتگو پیدا نشد", "این پیام دیگر در فهرست مربوطه وجود ندارد.")
                 }
             }
         }
@@ -160,16 +219,31 @@ private fun GatewayHero(settings: GatewaySettings, onToggle: (Boolean) -> Unit) 
 @Composable private fun ConnectionSummary(settings: GatewaySettings, syncing: Boolean) { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { InfoRow("پنل وب", settings.serverUrl.ifBlank { "تنظیم نشده" }, settings.serverUrl.isNotBlank()); InfoRow("همگام‌سازی", if (syncing) "در حال اجرا" else "هر ${settings.syncIntervalSeconds} ثانیه", !syncing); InfoRow("حالت تست", if (settings.isTestMode) "فعال" else "غیرفعال", true) } } }
 
 @Composable
-private fun MessagesPage(title: String, messages: List<SyncedSms>, icon: ImageVector, permission: Boolean) {
+private fun MessagesPage(title: String, messages: List<SyncedSms>, icon: ImageVector, permission: Boolean, onMessageClick: (SyncedSms) -> Unit) {
     var query by rememberSaveable(title) { mutableStateOf("") }; val filtered = messages.filter { query.isBlank() || it.address.contains(query, true) || it.body.contains(query, true) }
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars)) {
         Spacer(Modifier.height(4.dp)); OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, leadingIcon = { Icon(Icons.Default.Search, null) }, placeholder = { Text("جست‌وجوی شماره یا متن") }, label = { Text(title) }); Spacer(Modifier.height(12.dp))
         if (!permission) DisabledState("صندوق پیامک غیرفعال است", "مجوز READ_SMS برای نمایش پیام‌ها لازم است.")
         else if (filtered.isEmpty()) EmptyState(icon, if (query.isBlank()) "$title خالی است" else "نتیجه‌ای پیدا نشد", "پیام‌های همگام‌شده در این بخش نمایش داده می‌شوند.")
-        else { Text("${filtered.size} پیام", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(8.dp)); LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) { items(filtered, key = { it.id }) { MessageRow(it) } } }
+        else { Text("${filtered.size} پیام", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(8.dp)); LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) { items(filtered, key = { it.id }) { MessageRow(it, { onMessageClick(it) }) } } }
     }
 }
-@Composable private fun MessageRow(message: SyncedSms) { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(message.address, fontWeight = FontWeight.Bold); Text("همگام‌شده", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }; Text(message.body, maxLines = 3, overflow = TextOverflow.Ellipsis); Text(dateText(message.date), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+@Composable private fun MessageRow(message: SyncedSms, onClick: () -> Unit) { Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(message.address, fontWeight = FontWeight.Bold); Text("همگام‌شده", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }; Text(message.body, maxLines = 3, overflow = TextOverflow.Ellipsis); Text(dateText(message.date), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+
+@Composable
+private fun ConversationPage(message: SyncedSms) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Spacer(Modifier.height(4.dp))
+        SectionHeader("جزئیات گفتگو", message.address)
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(message.address, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(message.body, style = MaterialTheme.typography.bodyLarge)
+                Text(dateText(message.date), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
 
 @Composable
 private fun SendPage(onSend: (String, String, Int) -> Unit, testMode: Boolean, gateway: Boolean) {

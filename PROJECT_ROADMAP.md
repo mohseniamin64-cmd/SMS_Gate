@@ -512,3 +512,17 @@
 - [ ] در صورت نیاز، نصب Native ECC برای Codex به‌صورت جداگانه و فقط یک‌بار انجام شود.
 
 تصمیم: ECC ابزار مدیریت توسعه است، نه Dependency برنامه. APK نباید برای اجرا به ECC وابسته باشد.
+
+### رکورد ۰۰۳ — اصلاح همگام‌سازی حذف P0
+
+- تاریخ: 2026-09-02
+- مرحله: ۴ و ۵ — Sync و حذف واقعی
+- هدف: جلوگیری از resurrection، تشخیص حذف پیام‌های قدیمی و حذف کامل مکالمه بدون حذف SMS گوشی
+- فایل‌های تغییرکرده: `app/src/main/java/com/example/data/repository/SmsRepository.kt`، `app/src/main/java/com/example/data/repository/SmsSyncPlanner.kt`، `app/src/main/java/com/example/data/local/AppDatabase.kt`، `app/src/test/java/com/example/data/repository/SmsSyncPlannerTest.kt`
+- نتیجه: query به snapshot کامل تغییر کرد؛ cursor ناقص/نامعتبر هیچ حذف یا درج جدیدی اعمال نمی‌کند؛ tombstone پیش از درج بررسی می‌شود؛ حذف فقط از cache محلی انجام می‌شود.
+- آزمون‌های اضافه‌شده: رفت‌وبرگشت چهار پیام، بازگشت با شناسه Provider جدید، حذف کامل مکالمه شامل پیام قدیمی، و snapshot ناقص.
+- آزمون‌های اجراشده: `git diff --check` موفق؛ Gradle test/build اجرا نشد چون clone فاقد `gradlew` و محیط فاقد Gradle سراسری است.
+- مشکلات باقی‌مانده: اجرای build/test باید در محیط دارای Android SDK و Gradle انجام شود؛ تست گوشی واقعی هنوز انجام نشده است.
+- تصمیم معماری: تشخیص حذف فقط بر اساس snapshot کامل Provider مجاز است؛ API و Backend بدون تغییر باقی ماندند؛ fallback مهاجرت مخرب حذف شد.
+- وضعیت: پیاده‌سازی انجام شد؛ تأیید build/test محیطی باقی‌مانده است.
+- گام بعدی: اجرای `:app:testDebugUnitTest` و build در محیط CI یا Android Studio، سپس تست Provider روی گوشی واقعی.

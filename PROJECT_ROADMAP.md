@@ -563,3 +563,13 @@
 - بررسی‌ها: XML structural validation، scan لاگ حساس، scan حذف `BODY`/`printStackTrace` و `git diff --check` موفق شدند.
 - Build محلی: قابل اجرا نبود؛ `gradlew.bat` و Gradle سراسری در محیط موجود نیستند. نتیجهٔ واقعی build باید از GitHub Actions/Android Studio ثبت شود.
 - بازبینی امنیتی مستقل: سه blocker P0 شناسایی شد و هر سه در working tree اصلاح شدند؛ هیچ فایل امنیتی حدسی یا گزارشِ بدون Diff وارد نشد.
+
+### رکورد ۰۰۶ — هماهنگ‌سازی تست Robolectric
+
+- تاریخ: 2026-09-02
+- فایل تغییرکرده: `app/src/test/java/com/example/ExampleRobolectricTest.kt`.
+- نتیجه: assertion نام نمونهٔ `My Application` به نام واقعی `SMS Center` تغییر کرد؛ تست حذف یا غیرفعال نشد.
+- manifest: `FOREGROUND_SERVICE_DATA_SYNC` و `foregroundServiceType="dataSync"` از commit امنیتی قبلی موجود و تأیید شدند؛ تغییر منطق SMS/API انجام نشد.
+- بررسی ساختاری: ۶ تست با annotation `@Test` شناسایی شد؛ assertion نام برنامه و تنظیمات foreground معتبر هستند؛ `git diff --check` موفق است.
+- Build/test: `:app:testDebugUnitTest` و `:app:assembleDebug` قابل اجرا نبودند چون `gradlew.bat` و Gradle سراسری در محیط وجود ندارند. workflow CI کم‌ریسک در commit قبلی اضافه شده است.
+- انتشار: commit بعدی محلی ثبت می‌شود اما تا سبزشدن هر دو task، push جدید انجام نمی‌شود.

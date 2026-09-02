@@ -11,18 +11,22 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
+import androidx.compose.material.icons.outlined.ContactPhone
+import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.SmsFailed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,976 +35,199 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.data.local.GatewaySettings
-import com.example.data.local.LogEntry
-import com.example.data.local.SmsQueueItem
+import com.example.data.local.*
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.SmsViewModel
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
-import android.telephony.SubscriptionManager
-
 class MainActivity : ComponentActivity() {
-
     private val viewModel: SmsViewModel by viewModels()
-
-    // Request permissions dynamically
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val smsRead = permissions[Manifest.permission.READ_SMS] ?: false
-        val smsSend = permissions[Manifest.permission.SEND_SMS] ?: false
-        val smsReceive = permissions[Manifest.permission.RECEIVE_SMS] ?: false
-        val phoneState = permissions[Manifest.permission.READ_PHONE_STATE] ?: false
-
-        if (smsRead && smsSend && smsReceive && phoneState) {
-            Toast.makeText(this, "تمام مجوزهای لازم اعطا شد", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(this, "برخی مجوزها برای کارکرد صحیح مورد نیاز است", Toast.LENGTH_LONG).show()
-        }
+    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        val required = listOf(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS, Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_PHONE_STATE)
+        val granted = required.all { result[it] == true || ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+        Toast.makeText(this, if (granted) "تمام مجوزهای لازم اعطا شد" else "برخی مجوزها برای کارکرد صحیح مورد نیاز است", if (granted) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
     }
-
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        checkAndRequestPermissions()
-
-        setContent {
-            MyApplicationTheme {
-                // Enforce Right-to-Left Layout direction for Farsi
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                        SmsGatewayAppScreen(
-                            viewModel = viewModel,
-                            modifier = Modifier.padding(innerPadding),
-                            onGrantPermissions = { checkAndRequestPermissions() }
-                        )
-                    }
-                }
-            }
-        }
+        super.onCreate(savedInstanceState); enableEdgeToEdge()
+        setContent { MyApplicationTheme { androidx.compose.runtime.CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) { SmsGatewayAppScreen(viewModel, onGrantPermissions = ::checkAndRequestPermissions) } } }
     }
-
     private fun checkAndRequestPermissions() {
-        val permissions = mutableListOf(
-            Manifest.permission.READ_SMS,
-            Manifest.permission.SEND_SMS,
-            Manifest.permission.RECEIVE_SMS,
-            Manifest.permission.READ_PHONE_STATE
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-
-        val toRequest = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (toRequest.isNotEmpty()) {
-            permissionLauncher.launch(toRequest.toTypedArray())
-        }
+        val permissions = mutableListOf(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS, Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_PHONE_STATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) permissions += Manifest.permission.POST_NOTIFICATIONS
+        val pending = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (pending.isNotEmpty()) permissionLauncher.launch(pending.toTypedArray())
     }
 }
 
-// -------------------------------------------------------------------------
-// COMPOSABLE UI IMPLEMENTATIONS
-// -------------------------------------------------------------------------
+enum class AppDestination(val key: String, val title: String, val icon: ImageVector) {
+    DASHBOARD("dashboard", "داشبورد", Icons.Default.Dashboard), INBOX("inbox", "صندوق ورودی", Icons.Outlined.Inbox), SENT("sent", "ارسال‌شده", Icons.Outlined.Send),
+    SEND("send", "ارسال پیام", Icons.Default.Send), QUEUE("queue", "صف ارسال", Icons.Default.ListAlt), CONTACTS("contacts", "مخاطبان", Icons.Default.Contacts),
+    GATEWAY("gateway", "وضعیت Gateway", Icons.Default.Router), SETTINGS("settings", "تنظیمات", Icons.Default.Settings), LOGS("logs", "گزارش‌ها", Icons.Default.Article);
+    companion object { fun from(key: String) = entries.firstOrNull { it.key == key } ?: DASHBOARD }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SmsGatewayAppScreen(
-    viewModel: SmsViewModel,
-    modifier: Modifier = Modifier,
-    onGrantPermissions: () -> Unit
-) {
+fun SmsGatewayAppScreen(viewModel: SmsViewModel, modifier: Modifier = Modifier, onGrantPermissions: () -> Unit) {
     val context = LocalContext.current
     val settings by viewModel.settingsState.collectAsStateWithLifecycle()
-    val syncedSms by viewModel.syncedSmsState.collectAsStateWithLifecycle()
+    val messages by viewModel.syncedSmsState.collectAsStateWithLifecycle()
     val queue by viewModel.queueState.collectAsStateWithLifecycle()
     val logs by viewModel.logsState.collectAsStateWithLifecycle()
     val syncing by viewModel.syncingState.collectAsStateWithLifecycle()
-    val toastMsg by viewModel.toastMessage.collectAsStateWithLifecycle()
-
-    var selectedTab by remember { mutableStateOf(0) }
-    val tabs = listOf("داشبورد", "ارسال پیام", "صف ارسال", "تنظیمات", "لاگ‌ها")
-
-    // Show feedback toasts if triggered
-    LaunchedEffect(toastMsg) {
-        toastMsg?.let {
-            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
-            viewModel.clearToast()
-        }
-    }
-
-    Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // App Header
-        CenterAlignedTopAppBar(
-            title = {
+    val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
+    var selectedKey by rememberSaveable { mutableStateOf(AppDestination.DASHBOARD.key) }
+    val drawer = rememberDrawerState(DrawerValue.Closed); val scope = rememberCoroutineScope(); val selected = AppDestination.from(selectedKey)
+    LaunchedEffect(toast) { toast?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show(); viewModel.clearToast() } }
+    ModalNavigationDrawer(drawerState = drawer, drawerContent = {
+        ModalDrawerSheet(Modifier.width(300.dp)) {
+            Column(Modifier.padding(24.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Sms,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(28.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "سامانه پیامک SMS Center",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
-                    )
+                    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer) { Icon(Icons.Default.Sms, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.padding(12.dp).size(28.dp)) }
+                    Spacer(Modifier.width(12.dp)); Column { Text("SMS Center", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("مرکز کنترل Gateway", style = MaterialTheme.typography.bodySmall) }
                 }
-            },
-            colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-            )
-        )
-
-        // Navigation Tabs Row
-        ScrollableTabRow(
-            selectedTabIndex = selectedTab,
-            edgePadding = 0.dp,
-            containerColor = MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.primary
-        ) {
-            tabs.forEachIndexed { index, title ->
-                Tab(
-                    selected = selectedTab == index,
-                    onClick = { selectedTab = index },
-                    text = { Text(text = title, fontWeight = FontWeight.Bold, fontSize = 14.sp) }
-                )
+                Spacer(Modifier.height(18.dp)); GatewayStatusLabel(settings.isGatewayEnabled)
             }
+            Divider()
+            AppDestination.entries.forEach { destination -> NavigationDrawerItem(label = { Text(destination.title) }, selected = destination == selected, onClick = { selectedKey = destination.key; scope.launch { drawer.close() } }, icon = { Icon(destination.icon, null) }, modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) }
         }
-
-        Divider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-
-        // Tab Contents Screen Switch
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            when (selectedTab) {
-                0 -> DashboardTab(
-                    settings = settings,
-                    syncedCount = syncedSms.size,
-                    queue = queue,
-                    syncing = syncing,
-                    onToggleGateway = { viewModel.toggleGateway(it) },
-                    onSyncNow = { viewModel.triggerManualSync() },
-                    onGrantPermissions = onGrantPermissions
-                )
-                1 -> SendSmsTab(
-                    onSendSms = { phone, text, sim -> viewModel.enqueueManualSms(phone, text, sim) },
-                    isTestMode = settings.isTestMode
-                )
-                2 -> QueueTab(
-                    queue = queue,
-                    onClearHistory = { viewModel.clearHistory() }
-                )
-                3 -> SettingsTab(
-                    settings = settings,
-                    onSave = { viewModel.saveSettings(it) }
-                )
-                4 -> LogsTab(
-                    logs = logs,
-                    onClearLogs = { viewModel.clearSystemLogs() }
-                )
+    }) {
+        Scaffold(modifier.fillMaxSize(), topBar = {
+            CenterAlignedTopAppBar(title = { Text(selected.title, fontWeight = FontWeight.Bold) }, navigationIcon = { IconButton({ scope.launch { drawer.open() } }) { Icon(Icons.Default.Menu, "باز کردن منوی برنامه") } }, actions = { StatusDot(settings.isGatewayEnabled); Spacer(Modifier.width(16.dp)) }, colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.background))
+        }) { padding ->
+            Box(Modifier.padding(padding)) {
+                when (selected) {
+                    AppDestination.DASHBOARD -> DashboardPage(settings, messages.size, queue, syncing, viewModel::toggleGateway, viewModel::triggerManualSync, onGrantPermissions) { selectedKey = it.key }
+                    AppDestination.INBOX -> MessagesPage("صندوق ورودی", messages.filter { it.simSlot == 1 }, Icons.Outlined.Inbox, hasPermission(context, Manifest.permission.READ_SMS))
+                    AppDestination.SENT -> MessagesPage("ارسال‌شده", messages.filter { it.simSlot == 2 }, Icons.Outlined.Send, hasPermission(context, Manifest.permission.READ_SMS))
+                    AppDestination.SEND -> SendPage(viewModel::enqueueManualSms, settings.isTestMode, settings.isGatewayEnabled)
+                    AppDestination.QUEUE -> QueuePage(queue, viewModel::clearHistory)
+                    AppDestination.CONTACTS -> EmptyState(Icons.Outlined.ContactPhone, "مخاطبان هنوز آماده نیست", "مدل مخاطب و منبع داده در قرارداد فعلی وجود ندارد.", "TODO: پس از تعریف Contacts data source اضافه شود.")
+                    AppDestination.GATEWAY -> GatewayPage(settings, syncing, viewModel::toggleGateway, viewModel::triggerManualSync, onGrantPermissions) { selectedKey = AppDestination.SETTINGS.key }
+                    AppDestination.SETTINGS -> SettingsPage(settings, viewModel::saveSettings)
+                    AppDestination.LOGS -> LogsPage(logs, viewModel::clearSystemLogs)
+                }
             }
         }
     }
 }
 
-// -------------------------------------------------------------------------
-// TAB 1: DASHBOARD SCREEN
-// -------------------------------------------------------------------------
+@Composable
+private fun DashboardPage(settings: GatewaySettings, count: Int, queue: List<SmsQueueItem>, syncing: Boolean, onToggle: (Boolean) -> Unit, onSync: () -> Unit, onPermissions: () -> Unit, onNavigate: (AppDestination) -> Unit) {
+    val context = LocalContext.current; val pending = queue.count { it.status == "PENDING" || it.status == "PROCESSING" }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { Spacer(Modifier.height(4.dp)); GatewayHero(settings, onToggle) }
+        if (!hasPermission(context, Manifest.permission.READ_SMS) || !hasPermission(context, Manifest.permission.SEND_SMS)) item { PermissionCard(onPermissions) }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) { MetricCard("پیام همگام‌شده", count.toString(), Icons.Default.CloudSync, Modifier.weight(1f)); MetricCard("در انتظار ارسال", pending.toString(), Icons.Default.HourglassEmpty, Modifier.weight(1f)) } }
+        item { SectionHeader("دسترسی سریع", "کارهای روزمره"); Spacer(Modifier.height(8.dp)); Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) { QuickAction("ورودی", Icons.Outlined.Inbox, { onNavigate(AppDestination.INBOX) }, Modifier.weight(1f)); QuickAction("صف", Icons.Default.ListAlt, { onNavigate(AppDestination.QUEUE) }, Modifier.weight(1f)); QuickAction("همگام‌سازی", Icons.Default.Refresh, onSync, Modifier.weight(1f), !syncing) } }
+        item { SectionHeader("خلاصه اتصال", "وضعیت فعلی دستگاه و پنل"); Spacer(Modifier.height(8.dp)); ConnectionSummary(settings, syncing) }
+        item { TextButton({ onNavigate(AppDestination.GATEWAY) }, Modifier.fillMaxWidth()) { Text("مشاهده جزئیات Gateway") } }
+    }
+}
 
 @Composable
-fun DashboardTab(
-    settings: GatewaySettings,
-    syncedCount: Int,
-    queue: List<SmsQueueItem>,
-    syncing: Boolean,
-    onToggleGateway: (Boolean) -> Unit,
-    onSyncNow: () -> Unit,
-    onGrantPermissions: () -> Unit
-) {
+private fun GatewayPage(settings: GatewaySettings, syncing: Boolean, onToggle: (Boolean) -> Unit, onSync: () -> Unit, onPermissions: () -> Unit, onSettings: () -> Unit) {
     val context = LocalContext.current
-    val hasSmsPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
-    val hasSendPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // Gateway Toggle Hero Card
-        item {
-            ElevatedCard(
-                colors = CardDefaults.elevatedCardColors(
-                    containerColor = if (settings.isGatewayEnabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column {
-                            Text(
-                                text = "وضعیت درگاه پیامک",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                color = if (settings.isGatewayEnabled) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = if (settings.isGatewayEnabled) "سرویس پس‌زمینه فعال است" else "درگاه غیرفعال می‌باشد",
-                                fontSize = 13.sp,
-                                color = if (settings.isGatewayEnabled) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                            )
-                        }
-                        Switch(
-                            checked = settings.isGatewayEnabled,
-                            onCheckedChange = { onToggleGateway(it) }
-                        )
-                    }
-
-                    if (settings.isGatewayEnabled) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.CloudSync,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "درحال همگام‌سازی خودکار (هر ${settings.syncIntervalSeconds} ثانیه)",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Permissions Card Warning
-        if (!hasSmsPermission || !hasSendPermission) {
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "مجوزهای دسترسی قطع هستند",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "برای دریافت و ارسال پیامک، سیستم نیازمند تایید دستی مجوزهای گوشی است.",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Button(
-                            onClick = onGrantPermissions,
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                        ) {
-                            Text("اعطای مجوزها")
-                        }
-                    }
-                }
-            }
-        }
-
-        // Stats Summaries Grid
-        item {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                // Synced Count Card
-                Card(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(text = "پیام‌های همگام شده", fontSize = 12.sp, color = Color.Gray)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(text = syncedCount.toString(), fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                // In Queue Pending Count Card
-                Card(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    val pendingCount = queue.count { it.status == "PENDING" || it.status == "PROCESSING" }
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(text = "در انتظار ارسال", fontSize = 12.sp, color = Color.Gray)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(text = pendingCount.toString(), fontSize = 24.sp, fontWeight = FontWeight.Bold, color = if (pendingCount > 0) MaterialTheme.colorScheme.primary else Color.Unspecified)
-                    }
-                }
-            }
-        }
-
-        // Sync Action and General Metadata Info
-        item {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(text = "مشخصات درگاه فعال", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    DetailRow(label = "شناسه دستگاه:", value = settings.deviceId)
-                    DetailRow(label = "آدرس سرور پنل:", value = settings.serverUrl.ifBlank { "تنظیم نشده" })
-                    DetailRow(label = "حالت تستی:", value = if (settings.isTestMode) "فعال (بدون کسر شارژ)" else "غیرفعال (ارسال واقعی)")
-                    DetailRow(label = "بازه ساعت کاری:", value = "${settings.workingHoursStart} تا ${settings.workingHoursEnd}")
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = onSyncNow,
-                        enabled = !syncing,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (syncing) {
-                            CircularProgressIndicator(size = 20.dp, color = MaterialTheme.colorScheme.onPrimary)
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text("در حال همگام‌سازی...")
-                        } else {
-                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("همگام‌سازی دستی سریع")
-                        }
-                    }
-                }
-            }
-        }
-
-        // Device System Capabilities & SIMs status
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(text = "وضعیت سیم‌کارت‌های دستگاه", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    val subscriptionManager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
-                    val activeList = if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
-                        subscriptionManager?.activeSubscriptionInfoList ?: emptyList()
-                    } else {
-                        emptyList()
-                    }
-
-                    if (activeList.isNotEmpty()) {
-                        Text(text = "تعداد ${activeList.size} سیم‌کارت فعال شناسایی شد.", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        for (index in activeList.indices) {
-                            val subInfo = activeList[index]
-                            Text(
-                                text = "• سیم‌کارت ${index + 1}: ${subInfo.carrierName} (اسلات شماره ${subInfo.simSlotIndex})",
-                                fontSize = 12.sp
-                            )
-                        }
-                    } else {
-                        Text(text = "هیچ اطلاعات سیم‌کارتی یافت نشد. (احتمال عدم اعطای مجوز READ_PHONE_STATE یا عدم قرارگیری سیم‌کارت)", color = Color.Red, fontSize = 12.sp)
-                    }
-                }
-            }
-        }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { Spacer(Modifier.height(4.dp)); GatewayHero(settings, onToggle) }
+        if (settings.isGatewayEnabled && settings.serverUrl.isBlank()) item { ErrorState("اتصال پنل کامل نیست", "آدرس سرور پنل در تنظیمات وارد نشده است.", onSettings) }
+        if (!hasPermission(context, Manifest.permission.READ_SMS) || !hasPermission(context, Manifest.permission.SEND_SMS)) item { PermissionCard(onPermissions) }
+        item { ConnectionSummary(settings, syncing) }
+        item { Button(onSync, enabled = !syncing && settings.isGatewayEnabled, modifier = Modifier.fillMaxWidth()) { if (syncing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(8.dp)); Text(if (syncing) "در حال همگام‌سازی" else "همگام‌سازی دستی") } }
     }
 }
 
 @Composable
-fun DetailRow(label: String, value: String) {
-    Row(
-        horizontalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-    ) {
-        Text(text = label, color = Color.Gray, fontSize = 13.sp)
-        Text(text = value, fontWeight = FontWeight.Medium, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-// CircularProgressIndicator custom helper for pre-API O compatibility
-@Composable
-fun CircularProgressIndicator(size: androidx.compose.ui.unit.Dp, color: Color) {
-    androidx.compose.material3.CircularProgressIndicator(
-        modifier = Modifier.size(size),
-        color = color,
-        strokeWidth = 2.dp
-    )
-}
-
-// -------------------------------------------------------------------------
-// TAB 2: SEND MANUAL SMS TAB
-// -------------------------------------------------------------------------
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SendSmsTab(
-    onSendSms: (String, String, Int) -> Unit,
-    isTestMode: Boolean
-) {
-    var phoneNumber by remember { mutableStateOf("") }
-    var messageText by remember { mutableStateOf("") }
-    var selectedSimSlot by remember { mutableStateOf(-1) } // -1: Default, 0: SIM1, 1: SIM2
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        item {
-            Text(
-                text = "ارسال پیامک جدید دستوری",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                text = "از این بخش می‌توانید پیامک‌های تکی به گوشی یا مخاطبین جهت تست ارسال فرمایید.",
-                fontSize = 12.sp,
-                color = Color.Gray
-            )
-        }
-
-        if (isTestMode) {
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "سامانه در حالت تست است. پیامکی بصورت واقعی ارسال نشده و تستی شبیه‌سازی خواهد شد.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                    }
-                }
-            }
-        }
-
-        item {
-            OutlinedTextField(
-                value = phoneNumber,
-                onValueChange = { phoneNumber = it },
-                label = { Text("شماره موبایل گیرنده") },
-                placeholder = { Text("مثال: 09123456789") },
-                leadingIcon = { Icon(imageVector = Icons.Default.Phone, contentDescription = null) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            OutlinedTextField(
-                value = messageText,
-                onValueChange = { messageText = it },
-                label = { Text("متن پیامک") },
-                placeholder = { Text("پیامک فارسی یا انگلیسی خود را اینجا وارد کنید...") },
-                minLines = 4,
-                modifier = Modifier.fillMaxWidth()
-            )
-            
-            // Farsi character details calculation helper
-            val charCount = messageText.length
-            val isPersian = messageText.any { it.code in 0x0600..0x06FF }
-            val limit = if (isPersian) 70 else 160
-            val parts = if (charCount == 0) 0 else (charCount - 1) / limit + 1
-
-            Row(
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-            ) {
-                Text(text = "نوع نگارش: ${if (isPersian) "فارسی" else "انگلیسی/Unicode"}", fontSize = 11.sp, color = Color.Gray)
-                Text(text = "حروف: $charCount | بخش‌ها: $parts", fontSize = 11.sp, color = Color.Gray)
-            }
-        }
-
-        // SIM Slot selector Chip row
-        item {
-            Column {
-                Text(text = "انتخاب سیم‌کارت فرستنده:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = selectedSimSlot == -1,
-                        onClick = { selectedSimSlot = -1 },
-                        label = { Text("پیش‌فرض سیستم") }
-                    )
-                    FilterChip(
-                        selected = selectedSimSlot == 0,
-                        onClick = { selectedSimSlot = 0 },
-                        label = { Text("سیم‌کارت ۱") }
-                    )
-                    FilterChip(
-                        selected = selectedSimSlot == 1,
-                        onClick = { selectedSimSlot = 1 },
-                        label = { Text("سیم‌کارت ۲") }
-                    )
-                }
-            }
-        }
-
-        // Submit action button
-        item {
-            Button(
-                onClick = {
-                    onSendSms(phoneNumber, messageText, selectedSimSlot)
-                    phoneNumber = ""
-                    messageText = ""
-                },
-                enabled = phoneNumber.isNotBlank() && messageText.isNotBlank(),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
-            ) {
-                Icon(imageVector = Icons.Default.Send, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("ارسال مستقیم به صف")
-            }
+private fun GatewayHero(settings: GatewaySettings, onToggle: (Boolean) -> Unit) {
+    ElevatedCard(Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = if (settings.isGatewayEnabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) { Column(Modifier.weight(1f)) { Text("درگاه پیامک", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(if (settings.isGatewayEnabled) "سرویس پس‌زمینه فعال است" else "درگاه فعلاً خاموش است", style = MaterialTheme.typography.bodyMedium) }; Switch(settings.isGatewayEnabled, onToggle) }
+            Divider(); Row(verticalAlignment = Alignment.CenterVertically) { StatusDot(settings.isGatewayEnabled); Spacer(Modifier.width(8.dp)); Text(if (settings.isGatewayEnabled) "آماده دریافت و پردازش صف" else "برای شروع، درگاه را فعال کنید") }
         }
     }
 }
 
-// -------------------------------------------------------------------------
-// TAB 3: SMS OUTBOX / QUEUE MONITOR
-// -------------------------------------------------------------------------
+@Composable private fun PermissionCard(onClick: () -> Unit) { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), modifier = Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text("مجوزهای پیامک کامل نیست", fontWeight = FontWeight.Bold); Text("دریافت و ارسال تا تأیید مجوزها غیرفعال می‌ماند.", style = MaterialTheme.typography.bodySmall) }; TextButton(onClick) { Text("تأیید") } } } }
+@Composable private fun ConnectionSummary(settings: GatewaySettings, syncing: Boolean) { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { InfoRow("پنل وب", settings.serverUrl.ifBlank { "تنظیم نشده" }, settings.serverUrl.isNotBlank()); InfoRow("همگام‌سازی", if (syncing) "در حال اجرا" else "هر ${{settings.syncIntervalSeconds} ثانیه", !syncing); InfoRow("حالت تست", if (settings.isTestMode) "فعال" else "غیرفعال", true) } } }
 
 @Composable
-fun QueueTab(
-    queue: List<SmsQueueItem>,
-    onClearHistory: () -> Unit
-) {
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Row(
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = "صف و تاریخچه پیامک‌ها (${queue.size})",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
+private fun MessagesPage(title: String, messages: List<SyncedSms>, icon: ImageVector, permission: Boolean) {
+    var query by rememberSaveable(title) { mutableStateOf("") }; val filtered = messages.filter { query.isBlank() || it.address.contains(query, true) || it.body.contains(query, true) }
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars)) {
+        Spacer(Modifier.height(4.dp)); OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, leadingIcon = { Icon(Icons.Default.Search, null) }, placeholder = { Text("جست‌وجوی شماره یا متن") }, label = { Text(title) }); Spacer(Modifier.height(12.dp))
+        if (!permission) DisabledState("صندوق پیامک غیرفعال است", "مجوز READ_SMS برای نمایش پیام‌ها لازم است.")
+        else if (filtered.isEmpty()) EmptyState(icon, if (query.isBlank()) "$title خالی است" else "نتیجه‌ای پیدا نشد", "پیام‌های همگام‌شده در این بخش نمایش داده می‌شوند.")
+        else { Text("${{filtered.size} پیام", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(8.dp)); LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) { items(filtered, key = { it.id }) { MessageRow(it) } } }
+    }
+}
+@Composable private fun MessageRow(message: SyncedSms) { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(message.address, fontWeight = FontWeight.Bold); Text("همگام‌شده", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }; Text(message.body, maxLines = 3, overflow = TextOverflow.Ellipsis); Text(dateText(message.date), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
 
-            if (queue.isNotEmpty()) {
-                TextButton(
-                    onClick = onClearHistory,
-                    colors = ButtonDefaults.textButtonColors(contentColor = Color.Red)
-                ) {
-                    Icon(imageVector = Icons.Default.DeleteSweep, contentDescription = null)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("پاک‌سازی تاریخچه")
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        if (queue.isEmpty()) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.weight(1f).fillMaxWidth()
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(imageVector = Icons.Outlined.SmsFailed, contentDescription = null, size = 64.dp, tint = Color.LightGray)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(text = "صف پیامک خالی است", color = Color.Gray, fontSize = 14.sp)
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(queue) { item ->
-                    QueueItemRow(item = item)
-                }
-            }
-        }
+@Composable
+private fun SendPage(onSend: (String, String, Int) -> Unit, testMode: Boolean, gateway: Boolean) {
+    var phone by rememberSaveable { mutableStateOf("") }; var body by rememberSaveable { mutableStateOf("") }; var sim by rememberSaveable { mutableStateOf(-1) }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item { Spacer(Modifier.height(4.dp)); SectionHeader("ارسال پیام", "پیام ابتدا در صف محلی ثبت می‌شود") }
+        if (!gateway) item { DisabledState("ارسال موقتاً غیرفعال است", "ابتدا Gateway را فعال کنید.") }
+        if (testMode) item { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer), modifier = Modifier.fillMaxWidth()) { Text("حالت تست فعال است؛ ارسال واقعی انجام نمی‌شود.", Modifier.padding(14.dp)) } }
+        item { OutlinedTextField(phone, { phone = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("شماره گیرنده") }) }
+        item { OutlinedTextField(body, { body = it }, Modifier.fillMaxWidth(), minLines = 5, label = { Text("متن پیام") }) }
+        item { Text("تعداد حروف: " + body.length, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { Text("سیم‌کارت فرستنده", style = MaterialTheme.typography.labelLarge); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilterChip(sim == -1, { sim = -1 }, label = { Text("پیش‌فرض") }); FilterChip(sim == 0, { sim = 0 }, label = { Text("سیم‌کارت ۱") }); FilterChip(sim == 1, { sim = 1 }, label = { Text("سیم‌کارت ۲") }) } }
+        item { Button({ onSend(phone, body, sim); phone = ""; body = "" }, enabled = gateway && phone.isNotBlank() && body.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("افزودن به صف ارسال") } }
     }
 }
 
-// Icon size helper to avoid issues
+private val statuses = listOf("همه", "PENDING", "PROCESSING", "SENT", "DELIVERED", "FAILED", "CANCELLED")
 @Composable
-fun Icon(imageVector: ImageVector, contentDescription: String?, size: androidx.compose.ui.unit.Dp, tint: Color) {
-    androidx.compose.material3.Icon(
-        imageVector = imageVector,
-        contentDescription = contentDescription,
-        tint = tint,
-        modifier = Modifier.size(size)
-    )
-}
-
-@Composable
-fun QueueItemRow(item: SmsQueueItem) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (item.status == "PENDING") Icons.Default.Schedule else Icons.Default.AccountCircle,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = item.phoneNumber, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                }
-
-                // Status Badge
-                val (badgeColor, label) = when (item.status) {
-                    "PENDING" -> Color(0xFFFFA500) to "در انتظار"
-                    "PROCESSING" -> Color(0xFF007FFF) to "درحال ارسال"
-                    "SENT" -> Color(0xFF2E8B57) to "ارسال شد"
-                    "DELIVERED" -> Color(0xFF008000) to "تحویل شد"
-                    "FAILED" -> Color(0xFFD32F2F) to "ناموفق"
-                    "CANCELLED" -> Color(0xFF7F7F7F) to "لغو شده"
-                    else -> Color.Gray to item.status
-                }
-
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(badgeColor.copy(alpha = 0.15f))
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Text(text = label, color = badgeColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(text = item.messageBody, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                val dateStr = SimpleDateFormat("HH:mm:ss - yyyy/MM/dd", Locale.US).format(Date(item.createdAt))
-                Text(text = "زمان ثبت: $dateStr", fontSize = 11.sp, color = Color.Gray)
-                
-                val simLabel = if (item.simSlot == -1) "پیش‌فرض" else "سیم ${item.simSlot + 1}"
-                Text(text = "فرستنده: $simLabel", fontSize = 11.sp, color = Color.Gray)
-            }
-
-            if (!item.errorMessage.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(text = "علت خطا: ${item.errorMessage}", color = Color.Red, fontSize = 11.sp)
-            }
-        }
+private fun QueuePage(queue: List<SmsQueueItem>, clear: () -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }; var status by rememberSaveable { mutableStateOf("همه") }
+    val filtered = queue.filter { (status == "همه" || it.status == status) && (query.isBlank() || it.phoneNumber.contains(query, true) || it.messageBody.contains(query, true)) }
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars)) {
+        Spacer(Modifier.height(4.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { SectionHeader("صف ارسال", "${{queue.size} مورد در تاریخچه"); if (queue.isNotEmpty()) TextButton(clear) { Icon(Icons.Default.DeleteSweep, null); Text("پاک‌سازی") } }
+        OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, leadingIcon = { Icon(Icons.Default.Search, null) }, placeholder = { Text("جست‌وجوی شماره یا متن") })
+        ScrollableTabRow(statuses.indexOf(status), edgePadding = 0.dp, divider = {}) { statuses.forEach { value -> Tab(value == status, { status = value }, text = { Text(statusLabel(value)) }) } }
+        if (filtered.isEmpty()) EmptyState(Icons.Outlined.SmsFailed, if (queue.isEmpty()) "صف پیامک خالی است" else "موردی با این فیلتر پیدا نشد", "پیام‌های جدید و تاریخچه ارسال اینجا نمایش داده می‌شوند.")
+        else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) { items(filtered, key = { it.id }) { QueueRow(it) } }
     }
 }
-
-// -------------------------------------------------------------------------
-// TAB 4: SETTINGS SCREEN
-// -------------------------------------------------------------------------
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SettingsTab(
-    settings: GatewaySettings,
-    onSave: (GatewaySettings) -> Unit
-) {
-    var serverUrl by remember { mutableStateOf(settings.serverUrl) }
-    var apiKey by remember { mutableStateOf(settings.apiKey) }
-    var deviceId by remember { mutableStateOf(settings.deviceId) }
-    var syncInterval by remember { mutableStateOf(settings.syncIntervalSeconds.toString()) }
-    var webhookUrl by remember { mutableStateOf(settings.webhookUrl) }
-    var webhookSecret by remember { mutableStateOf(settings.webhookSecret) }
-    var isTestMode by remember { mutableStateOf(settings.isTestMode) }
-    var dailyLimit by remember { mutableStateOf(settings.limitSmsPerDay.toString()) }
-    var startHours by remember { mutableStateOf(settings.workingHoursStart) }
-    var endHours by remember { mutableStateOf(settings.workingHoursEnd) }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        item {
-            Text(
-                text = "تنظیمات فنی و محدودیت‌ها",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                text = "از این بخش تنظیمات اتصال به پنل وب Flask، وب‌هوک و میزان محدودیت‌ها را ویرایش نمایید.",
-                fontSize = 11.sp,
-                color = Color.Gray
-            )
-        }
-
-        // Test Mode Toggle Setting Card
-        item {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isTestMode) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().padding(12.dp)
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(text = "حالت تست (شبیه‌سازی ارسال)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(text = "با فعال‌سازی این مورد، هزینه واقعی ارسال پیامک از سیم‌کارت کسر نمی‌شود.", fontSize = 11.sp, color = Color.Gray)
-                    }
-                    Switch(checked = isTestMode, onCheckedChange = { isTestMode = it })
-                }
-            }
-        }
-
-        item {
-            OutlinedTextField(
-                value = serverUrl,
-                onValueChange = { serverUrl = it },
-                label = { Text("آدرس سرور پنل وب Flask") },
-                placeholder = { Text("https://my-sms-panel.com") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            OutlinedTextField(
-                value = apiKey,
-                onValueChange = { apiKey = it },
-                label = { Text("کلید امنیتی اتصال (API Key)") },
-                placeholder = { Text("کلید احراز هویت اتصال به پنل") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            OutlinedTextField(
-                value = deviceId,
-                onValueChange = { deviceId = it },
-                label = { Text("شناسه یکتای دستگاه") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            OutlinedTextField(
-                value = syncInterval,
-                onValueChange = { syncInterval = it },
-                label = { Text("بازه زمانی همگام‌سازی خودکار (به ثانیه)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            OutlinedTextField(
-                value = webhookUrl,
-                onValueChange = { webhookUrl = it },
-                label = { Text("آدرس ارسال وب‌هوک (رویدادها و دریافت‌ها)") },
-                placeholder = { Text("https://my-panel.com/webhook") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            OutlinedTextField(
-                value = webhookSecret,
-                onValueChange = { webhookSecret = it },
-                label = { Text("کلید هشدار وب‌هوک (Signature Secret Key)") },
-                placeholder = { Text("جهت محاسبه امضای HMAC") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = startHours,
-                    onValueChange = { startHours = it },
-                    label = { Text("ساعت شروع کار") },
-                    placeholder = { Text("08:00") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedTextField(
-                    value = endHours,
-                    onValueChange = { endHours = it },
-                    label = { Text("ساعت پایان کار") },
-                    placeholder = { Text("22:00") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        item {
-            OutlinedTextField(
-                value = dailyLimit,
-                onValueChange = { dailyLimit = it },
-                label = { Text("سقف محدودیت ارسال روزانه پیامک") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            Button(
-                onClick = {
-                    val updated = settings.copy(
-                        serverUrl = serverUrl,
-                        apiKey = apiKey,
-                        deviceId = deviceId,
-                        syncIntervalSeconds = syncInterval.toIntOrNull() ?: 30,
-                        webhookUrl = webhookUrl,
-                        webhookSecret = webhookSecret,
-                        isTestMode = isTestMode,
-                        limitSmsPerDay = dailyLimit.toIntOrNull() ?: 500,
-                        workingHoursStart = startHours,
-                        workingHoursEnd = endHours
-                    )
-                    onSave(updated)
-                },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
-            ) {
-                Icon(imageVector = Icons.Default.Save, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("ذخیره تنظیمات")
-            }
-        }
-    }
-}
-
-// -------------------------------------------------------------------------
-// TAB 5: SYSTEM ERROR & DIAGNOSTIC LOGS
-// -------------------------------------------------------------------------
+@Composable private fun QueueRow(item: SmsQueueItem) { val color = statusColor(item.status); Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(item.phoneNumber, fontWeight = FontWeight.Bold); Surface(shape = RoundedCornerShape(50), color = color.copy(alpha = .16f)) { Text(statusLabel(item.status), Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = color, style = MaterialTheme.typography.labelSmall) } }; Text(item.messageBody, maxLines = 2, overflow = TextOverflow.Ellipsis); Text(dateText(item.createdAt), style = MaterialTheme.typography.labelSmall); item.errorMessage?.takeIf { it.isNotBlank() }?.let { Text("علت خطا: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) } } } }
 
 @Composable
-fun LogsTab(
-    logs: List<LogEntry>,
-    onClearLogs: () -> Unit
-) {
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Row(
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = "لاگ‌های سیستم و عملکرد (${logs.size})",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            if (logs.isNotEmpty()) {
-                TextButton(
-                    onClick = onClearLogs,
-                    colors = ButtonDefaults.textButtonColors(contentColor = Color.Red)
-                ) {
-                    Icon(imageVector = Icons.Default.ClearAll, contentDescription = null)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("پاک‌سازی لاگ‌ها")
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        if (logs.isEmpty()) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.weight(1f).fillMaxWidth()
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(imageVector = Icons.Outlined.Info, contentDescription = null, size = 64.dp, tint = Color.LightGray)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(text = "تاریخچه لاگی خالی است", color = Color.Gray, fontSize = 14.sp)
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                items(logs) { log ->
-                    LogRow(log = log)
-                }
-            }
-        }
+private fun SettingsPage(settings: GatewaySettings, save: (GatewaySettings) -> Unit) {
+    var url by remember(settings) { mutableStateOf(settings.serverUrl) }; var key by remember(settings) { mutableStateOf(settings.apiKey) }; var device by remember(settings) { mutableStateOf(settings.deviceId) }; var interval by remember(settings) { mutableStateOf(settings.syncIntervalSeconds.toString()) }; var webhook by remember(settings) { mutableStateOf(settings.webhookUrl) }; var secret by remember(settings) { mutableStateOf(settings.webhookSecret) }; var test by remember(settings) { mutableStateOf(settings.isTestMode) }; var daily by remember(settings) { mutableStateOf(settings.limitSmsPerDay.toString()) }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Spacer(Modifier.height(4.dp)); SectionHeader("تنظیمات", "اتصال پنل، وب‌هوک و محدودیت‌های ارسال") }
+        item { Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = if (test) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant)) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("حالت تست", fontWeight = FontWeight.Bold); Text("ارسال واقعی انجام نمی‌شود.", style = MaterialTheme.typography.bodySmall) }; Switch(test, { test = it }) } } }
+        item { Field("آدرس سرور پنل وب Flask", url, { url = it }, "https://my-sms-panel.com") }; item { Field("کلید امنیتی اتصال", key, { key = it }, "کلید احراز هویت", true) }; item { Field("شناسه یکتای دستگاه", device, { device = it }) }; item { Field("بازه همگام‌سازی (ثانیه)", interval, { interval = it }, "30") }; item { Field("آدرس وب‌هوک", webhook, { webhook = it }, "https://my-panel.com/webhook") }; item { Field("کلید امضای وب‌هوک", secret, { secret = it }, "HMAC secret", true) }; item { Field("سقف ارسال روزانه", daily, { daily = it }, "500") }
+        item { Button({ save(settings.copy(serverUrl = url, apiKey = key, deviceId = device, syncIntervalSeconds = interval.toIntOrNull() ?: 30, webhookUrl = webhook, webhookSecret = secret, isTestMode = test, limitSmsPerDay = daily.toIntOrNull() ?: 500)) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(8.dp)); Text("ذخیره تنظیمات") } }
     }
 }
+@Composable private fun Field(label: String, value: String, change: (String) -> Unit, hint: String = "", secret: Boolean = false) { OutlinedTextField(value, change, Modifier.fillMaxWidth(), singleLine = true, label = { Text(label) }, placeholder = { Text(hint) }, visualTransformation = if (secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None) }
 
 @Composable
-fun LogRow(log: LogEntry) {
-    val levelColor = when (log.level) {
-        "ERROR" -> Color(0xFFD32F2F)
-        "WARN" -> Color(0xFFFFA500)
-        else -> Color(0xFF008000)
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(levelColor.copy(alpha = 0.05f))
-            .padding(8.dp)
-    ) {
-        Column {
-            Row(
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(levelColor)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = log.tag, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = levelColor)
-                }
-                val timeStr = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(log.timestamp))
-                Text(text = timeStr, fontSize = 10.sp, color = Color.Gray)
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = log.message, fontSize = 12.sp, style = MaterialTheme.typography.bodyMedium)
-        }
-    }
+private fun LogsPage(logs: List<LogEntry>, clear: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).windowInsetsPadding(WindowInsets.navigationBars)) { Spacer(Modifier.height(4.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { SectionHeader("گزارش‌ها", "${{logs.size} رویداد اخیر"); if (logs.isNotEmpty()) TextButton(clear) { Icon(Icons.Default.ClearAll, null); Text("پاک‌سازی") } }; if (logs.isEmpty()) EmptyState(Icons.Default.Article, "گزارشی ثبت نشده است", "رویدادهای Gateway و همگام‌سازی اینجا نمایش داده می‌شوند.") else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) { items(logs, key = { it.id }) { log -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) { Text(log.tag, fontWeight = FontWeight.Bold); Text(log.message, style = MaterialTheme.typography.bodySmall); Text(dateText(log.timestamp), style = MaterialTheme.typography.labelSmall) } } } } }
 }
+@Composable private fun SectionHeader(title: String, subtitle: String? = null) { Column { Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+@Composable private fun MetricCard(label: String, value: String, icon: ImageVector, modifier: Modifier) { Card(modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .42f))) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary); Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(label, style = MaterialTheme.typography.labelSmall) } } }
+@Composable private fun QuickAction(label: String, icon: ImageVector, action: () -> Unit, modifier: Modifier, enabled: Boolean = true) { Surface(modifier.clip(RoundedCornerShape(16.dp)).clickable(enabled, onClick = action), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) .58f else .25f)) { Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) { Icon(icon, null); Text(label, style = MaterialTheme.typography.labelSmall) } } }
+@Composable private fun InfoRow(label: String, value: String, healthy: Boolean) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Row(verticalAlignment = Alignment.CenterVertically) { StatusDot(healthy); Spacer(Modifier.width(6.dp)); Text(value, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) } } }
+@Composable private fun GatewayStatusLabel(enabled: Boolean) { Row(verticalAlignment = Alignment.CenterVertically) { StatusDot(enabled); Spacer(Modifier.width(8.dp)); Text(if (enabled) "Gateway فعال" else "Gateway خاموش") } }
+@Composable private fun StatusDot(enabled: Boolean) { Box(Modifier.size(10.dp).clip(CircleShape).background(if (enabled) Color(0xFF65D391) else MaterialTheme.colorScheme.outline)) }
+@Composable private fun EmptyState(icon: ImageVector, title: String, message: String, todo: String? = null) { Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) { Icon(icon, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(52.dp)); Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center); Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center); todo?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary, textAlign = TextAlign.Center) } } } }
+@Composable private fun DisabledState(title: String, message: String) { Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Close, null); Spacer(Modifier.width(12.dp)); Column { Text(title, fontWeight = FontWeight.Bold); Text(message, style = MaterialTheme.typography.bodySmall) } } } }
+@Composable private fun ErrorState(title: String, message: String, action: () -> Unit) { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.ErrorOutline, null); Spacer(Modifier.width(8.dp)); Text(title, fontWeight = FontWeight.Bold) }; Text(message, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodySmall); TextButton(action) { Text("رفتن به تنظیمات") } } } }
+private fun hasPermission(context: Context, permission: String) = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+private fun dateText(value: Long) = SimpleDateFormat("yyyy/MM/dd  HH:mm", Locale("fa", "IR")).format(Date(value))
+private fun statusLabel(value: String) = when (value) { "همه" -> "همه"; "PENDING" -> "در انتظار"; "PROCESSING" -> "در حال ارسال"; "SENT" -> "ارسال شد"; "DELIVERED" -> "تحویل شد"; "FAILED" -> "ناموفق"; "CANCELLED" -> "لغو شد"; else -> value }
+private fun statusColor(value: String) = when (value) { "PENDING" -> Color(0xFFFFB74D); "PROCESSING" -> Color(0xFF64B5F6); "SENT", "DELIVERED" -> Color(0xFF65D391); "FAILED" -> Color(0xFFFF7777); else -> Color(0xFFB8B8C2) }
+@Composable fun Greeting(name: String) { Text("سلام، $name") }

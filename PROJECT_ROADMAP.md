@@ -56,7 +56,7 @@
 - [x] جزئیات گفتگو با نگه‌داشتن مقصد والد به فهرست Inbox یا Sent برمی‌گردد.
 - [x] پشتهٔ مسیر و شناسهٔ گفتگو با `rememberSaveable` برای rotation/recomposition حفظ می‌شوند.
 - [x] تست‌های Unit و Compose برای Settings، Inbox→Conversation و Send اضافه شدند.
-- [ ] تأیید build/test روی CI؛ اجرای محلی به‌دلیل نبود/resolve نشدن پلاگین Android در محیط متوقف شد.
+- [ ] تأیید build/test روی CI؛ اجرای محلی به‌دلیل resolve نشدن `com.android.application:9.1.1` متوقف شد. CI runهای `33685149124` (commit `addc202`) و `33685667122` (commit `80a7be6`) در `Run unit tests` شکست خوردند و `Assemble debug APK` به‌دلیل fail قبلی skip شد؛ run پایهٔ قبل از این اصلاح (`33616603823`, commit `ca1c463`) نیز همین وضعیت را داشت.
 
 ## ۴. محدوده
 

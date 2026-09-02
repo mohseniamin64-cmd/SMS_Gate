@@ -3,7 +3,6 @@ package com.example.service
 import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
@@ -100,15 +99,7 @@ class SmsGatewayService : Service() {
             .setOngoing(true)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun startPeriodicSync() {

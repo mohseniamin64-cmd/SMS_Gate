@@ -543,11 +543,11 @@ private fun GatewayPage(
             GatewayHero(connection, onConnect, onDisconnect, onRetry)
         }
         item { ConnectionStateCard(connection) }
-        if (settings.serverUrl.isBlank()) {
+        if (settings.phoneServerApiKey.isBlank()) {
             item {
                 ErrorState(
-                    "آدرس سرور تنظیم نشده است",
-                    "آدرس IP و پورت فقط از بخش Advanced Settings وارد می‌شود.",
+                    "کلید API سرور گوشی هنوز ساخته نشده است",
+                    "با فعال‌کردن Gateway یک کلید امن ساخته می‌شود؛ کلاینت وب باید همان کلید را ارسال کند.",
                     onSettings
                 )
             }
@@ -1238,6 +1238,8 @@ private fun SettingsPage(settings: GatewaySettings, save: (GatewaySettings) -> U
     var advanced by rememberSaveable { mutableStateOf(false) }
     var url by remember(settings) { mutableStateOf(settings.serverUrl) }
     var key by remember(settings) { mutableStateOf(settings.apiKey) }
+    var phoneKey by remember(settings) { mutableStateOf(settings.phoneServerApiKey) }
+    var phonePort by remember(settings) { mutableStateOf(settings.phoneServerPort.toString()) }
     var device by remember(settings) { mutableStateOf(settings.deviceId) }
     var interval by remember(settings) { mutableStateOf(settings.syncIntervalSeconds.toString()) }
     var webhook by remember(settings) { mutableStateOf(settings.webhookUrl) }
@@ -1296,10 +1298,10 @@ private fun SettingsPage(settings: GatewaySettings, save: (GatewaySettings) -> U
         if (advanced) {
             item {
                 Field(
-                    "آدرس سرور LAN",
+                    "آدرس پنل Flask (اختیاری)",
                     url,
                     { url = it },
-                    "نمونه: 192.168.1.10:5000 یا https://panel.example"
+                    "اتصال اصلی از طریق سرور خود گوشی است؛ این مسیر فقط برای سازگاری legacy است"
                 )
             }
             if (url.isNotBlank() && !validation.isValid) {
@@ -1314,6 +1316,17 @@ private fun SettingsPage(settings: GatewaySettings, save: (GatewaySettings) -> U
             }
             item {
                 Field("کلید API", key, { key = it }, "برای احراز هویت اتصال لازم است", true)
+            }
+            item {
+                Field(
+                    "کلید API سرور گوشی",
+                    phoneKey,
+                    { phoneKey = it },
+                    "کلاینت وب/رایانه باید این کلید را با Authorization: Bearer ارسال کند"
+                )
+            }
+            item {
+                Field("پورت HTTP سرور گوشی", phonePort, { phonePort = it }, "بین 1024 و 65535")
             }
             item {
                 Field("شناسه یکتای دستگاه", device, { device = it }, "در Contacts یا Call Log استفاده نمی‌شود")
@@ -1342,6 +1355,9 @@ private fun SettingsPage(settings: GatewaySettings, save: (GatewaySettings) -> U
                         settings.copy(
                             serverUrl = url,
                             apiKey = key,
+                            phoneServerApiKey = phoneKey,
+                            phoneServerPort = phonePort.toIntOrNull()?.coerceIn(1024, 65_535)
+                                ?: settings.phoneServerPort,
                             deviceId = device,
                             syncIntervalSeconds = interval.toIntOrNull()?.coerceAtLeast(5) ?: 30,
                             webhookUrl = webhook,

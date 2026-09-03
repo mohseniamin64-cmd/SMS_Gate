@@ -1,9 +1,9 @@
 # Phone HTTPS Server API (Phone-as-Server)
 
 When Gateway is enabled, the Android foreground service binds an HTTPS server to
-`0.0.0.0:<phoneServerPort>`. Use one of the IP addresses shown in the Gateway
-screen from a computer on the same Wi-Fi/LAN over HTTPS:
-`https://<phone-ip>:<phoneServerPort>`. The Flask backend remains an
+`0.0.0.0:<phoneServerPort>` (default port: `3030`). Access the server from a computer or
+client on the same Wi-Fi/LAN over HTTPS:
+`https://<PHONE-IP>:3030`. The Flask backend remains an
 optional legacy panel and is not required for direct phone access.
 
 ## TLS Security & Certificate Fingerprint

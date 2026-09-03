@@ -40,7 +40,7 @@ class PhoneHttpServer(
 ) {
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
-    private var activePort = 8080
+    private var activePort = 3030
 
     fun start(settings: GatewaySettings) {
         if (acceptJob?.isActive == true) return

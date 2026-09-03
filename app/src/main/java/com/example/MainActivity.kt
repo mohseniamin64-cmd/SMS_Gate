@@ -669,7 +669,8 @@ private fun ConnectionStateCard(connection: LanConnectionState) {
                 Text(connectionLabel(connection))
             }
             if (connection is LanConnectionState.Connected) {
-                Text("آدرس سرور (Endpoint): " + connection.endpoint, style = MaterialTheme.typography.bodySmall)
+                Text("آدرس سرور: " + connection.endpoint, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text("آدرس اتصال: https://<PHONE-IP>:3030", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("پروتکل انتقال: HTTPS (TLS واقعی)", style = MaterialTheme.typography.bodySmall)
                 connection.certificateFingerprint?.let { fp ->
                     Spacer(Modifier.height(4.dp))

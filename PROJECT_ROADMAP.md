@@ -621,3 +621,18 @@
   - `app/src/test/java/com/example/service/PhoneServerTlsTest.kt`: تست‌های unit برای تولید گواهی TLS و تطابق اثر انگشت SHA-256.
 - نتیجه: ارتباط سرور گوشی کاملاً امن و رمزگذاری‌شده (HTTPS) است؛ کلیدهای API و گواهی‌ها در سخت‌افزار امن نگهداری می‌شوند و Android 15 از طریق JobScheduler پشتیبانی می‌شود.
 
+### رکورد ۰۱۰ — مهاجرت پورت پیش‌فرض Phone Server به ۳۰۳۰ و Room Migration
+
+- تاریخ: 2026-09-03
+- هدف: تغییر پورت پیش‌فرض Phone Server به 3030 با HTTPS روی LAN، مهاجرت خودکار نصب‌های قبلی در دیتابیس Room و نمایش قالب آدرس اتصال `https://<PHONE-IP>:3030`.
+- فایل‌های تغییرکرده/اضافه‌شده:
+  - `app/src/main/java/com/example/data/local/AppDatabase.kt`: تغییر پیش‌فرض `phoneServerPort` به 3030، ارتقای نسخه دیتابیس Room به 4 و افزودن `MIGRATION_3_4` برای به‌روزرسانی 8080 به 3030 روی نصب‌های قبلی.
+  - `app/src/main/java/com/example/data/remote/PhoneServerModels.kt`: تغییر پورت پیش‌فرض در مدل وضعیت سرور به 3030.
+  - `app/src/main/java/com/example/service/PhoneHttpServer.kt`: مقداردهی پورت اولیه به 3030.
+  - `app/src/main/java/com/example/ui/viewmodel/SmsViewModel.kt`: قالب آدرس اتصال به صورت `https://<PHONE-IP>:${server.port}`.
+  - `app/src/main/java/com/example/MainActivity.kt`: نمایش صریح قالب آدرس اتصال `https://<PHONE-IP>:3030` در کارت وضعیت اتصال.
+  - `docs/PHONE_SERVER_API.md`: ثبت پورت پیش‌فرض 3030 و نشانی اتصال `https://<PHONE-IP>:3030`.
+  - `app/src/test/java/com/example/data/local/DatabaseMigrationTest.kt`: تست‌های واحد برای اجرای صحیح `MIGRATION_3_4` و پیش‌فرض‌های Room.
+- نتیجه: پورت پیش‌فرض به 3030 تغییر یافت؛ سازگاری با نصب‌های قبلی تضمین شد؛ و کلید API، TLS و قابلیت‌های SMS/Queue بدون دست‌کاری حفظ شدند.
+
+

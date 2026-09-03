@@ -11,7 +11,7 @@ import java.security.SecureRandom
 data class PhoneServerStatus(
     val running: Boolean = false,
     val addresses: List<String> = emptyList(),
-    val port: Int = 8080,
+    val port: Int = 3030,
     val error: String? = null,
     val transport: String = "https",
     val certificateFingerprint: String? = null

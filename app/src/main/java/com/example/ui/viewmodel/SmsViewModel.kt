@@ -116,7 +116,7 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
                 _lanConnectionState.value = when {
                     server.error != null -> LanConnectionState.Error(server.error)
                     server.running -> LanConnectionState.Connected(
-                        endpoint = server.primaryEndpoint ?: "https://IP_UNAVAILABLE:${server.port}",
+                        endpoint = server.primaryEndpoint ?: "https://<PHONE-IP>:${server.port}",
                         certificateFingerprint = server.certificateFingerprint
                     )
                     settingsState.value.isGatewayEnabled -> LanConnectionState.Connecting

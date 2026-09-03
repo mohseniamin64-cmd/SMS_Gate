@@ -43,7 +43,7 @@ data class GatewaySettings(
     val isGatewayEnabled: Boolean = false,
     val autostartEnabled: Boolean = false,
     val callLogSyncEnabled: Boolean = false,
-    val phoneServerPort: Int = 8080,
+    val phoneServerPort: Int = 3030,
     val phoneServerApiKey: String = ""
 )
 
@@ -264,6 +264,13 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+        database.execSQL("UPDATE gateway_settings SET phoneServerPort = 3030 WHERE phoneServerPort = 8080")
+        database.execSQL("UPDATE gateway_settings SET phoneServerApiKey = ''")
+    }
+}
+
 @Database(
     entities = [
         GatewaySettings::class,
@@ -273,7 +280,7 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         LogEntry::class,
         CallLogUploadItem::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -295,7 +302,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "sms_center_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

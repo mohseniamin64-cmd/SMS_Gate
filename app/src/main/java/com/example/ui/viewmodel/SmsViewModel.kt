@@ -22,7 +22,8 @@ import com.example.data.repository.SmsRepository
 import com.example.data.repository.SyncResult
 import com.example.data.remote.LanConnectionState
 import com.example.data.remote.LanEndpointValidator
-import com.example.data.remote.PhoneServerSecurity
+import com.example.data.remote.PhoneServerKeyStore
+import com.example.data.remote.PhoneServerCors
 import com.example.data.remote.PhoneServerStatusStore
 import com.example.receiver.GatewayBootReceiver
 import com.example.service.SmsGatewayService
@@ -101,7 +102,7 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         override fun onLost(network: Network) {
-            if (settingsState.value.isGatewayEnabled) {
+            if (settingsState.value.isGatewayEnabled && !PhoneServerStatusStore.state.value.running) {
                 _lanConnectionState.value = LanConnectionState.Offline(
                     "شبکهٔ LAN در دسترس نیست؛ اتصال پس از بازگشت شبکه دوباره بررسی می‌شود"
                 )
@@ -140,10 +141,8 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
         if (_lanConnectionState.value is LanConnectionState.Connecting) return
         viewModelScope.launch {
             val settings = settingsState.value
-            val key = settings.phoneServerApiKey.ifBlank { PhoneServerSecurity.generateApiKey() }
             val updated = settings.copy(
                 phoneServerPort = settings.phoneServerPort.coerceIn(1024, 65_535),
-                phoneServerApiKey = key,
                 isGatewayEnabled = true
             )
             repository.settingsDao.saveSettings(updated)
@@ -182,9 +181,28 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 return@launch
             }
+            val normalizedOrigin = if (settings.phoneServerAllowedOrigin.isBlank()) {
+                ""
+            } else {
+                PhoneServerCors.normalizeOrigin(settings.phoneServerAllowedOrigin)
+                    ?: run {
+                        _lanConnectionState.value = LanConnectionState.Error("Origin مجاز CORS معتبر نیست")
+                        return@launch
+                    }
+            }
+            if (settings.phoneServerApiKey.isNotBlank()) {
+                try {
+                    PhoneServerKeyStore(context).store(settings.phoneServerApiKey.trim())
+                } catch (_: Exception) {
+                    _lanConnectionState.value = LanConnectionState.Error("ذخیرهٔ امن کلید سرور گوشی انجام نشد")
+                    return@launch
+                }
+            }
             val updated = settings.copy(
                 serverUrl = validation?.normalizedBaseUrl ?: "",
                 phoneServerPort = settings.phoneServerPort.coerceIn(1024, 65_535),
+                phoneServerApiKey = "",
+                phoneServerAllowedOrigin = normalizedOrigin,
                 isGatewayEnabled = current.isGatewayEnabled
             )
             repository.settingsDao.saveSettings(updated)
@@ -327,15 +345,7 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
                 _toastMessage.value = "شماره و متن پیامک نمی‌تواند خالی باشد"
                 return@launch
             }
-            repository.smsQueueDao.insert(
-                com.example.data.local.SmsQueueItem(
-                    requestId = "manual_" + UUID.randomUUID(),
-                    phoneNumber = phone,
-                    messageBody = text,
-                    simSlot = simSlot,
-                    status = "PENDING"
-                )
-            )
+            repository.enqueueSms("manual_" + UUID.randomUUID(), phone, text, simSlot)
             repository.log("INFO", "پیامک دستی در صف محلی ثبت شد", "ViewModel")
             _toastMessage.value = "پیامک در صف محلی ثبت شد"
             if (settingsState.value.isGatewayEnabled) repository.processOutgoingQueue()

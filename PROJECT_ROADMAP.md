@@ -601,3 +601,14 @@
 - `git diff --check`: موفق.
 - Build/test واقعی: `testDebugUnitTest` و `assembleDebug` ابتدا با cache/offline و سپس هر دو با دسترسی آنلاین و `--refresh-dependencies` قبل از compile به‌علت resolve نشدن `com.android.tools.build:gradle:8.13.0` از Google/Maven/Plugin Portal متوقف شدند؛ هیچ خطای واقعی Kotlin از مرحلهٔ compile حاصل نشد و هیچ build سبزی ادعا نمی‌شود.
 - محدودیت باقی‌مانده: تست listener روی دستگاه واقعی و تست build پس از فراهم‌شدن artifactهای AGP باید انجام شود. Push انجام نشده است.
+
+### رکورد ۰۰۹ — اصلاحات QA برای lifecycle، concurrency و امنیت شبکه
+
+- تاریخ: 2026-09-02
+- شاخه: `codex/phone-server-architecture`، ادامهٔ commit `6d4ea261`.
+- lifecycle: در Android 15+، boot receiver به‌جای start مستقیم data-sync FGS، JobScheduler persisted را فعال می‌کند؛ JobService تلاش کنترل‌شده برای startForegroundService انجام می‌دهد و در صورت رد OS، sync محدود و امن را ادامه می‌دهد. در نسخه‌های قبل، FGS مستقیماً start می‌شود.
+- صف: `requestDedupeKey` nullable با migration non-destructive، get-or-insert تراکنشی، Mutex در Repository و `claimPending` اتمیک اضافه شد؛ duplicateهای قدیمی حذف نمی‌شوند و dispatch هم‌زمان یک SMS دوباره ارسال نمی‌کند.
+- امنیت HTTP: Bearer scheme دقیق، CORS با origin دقیق و Allow-Methods صریح، LAN-only پیش‌فرض، هشدار HTTP، و نگهداری API key با AES/GCM در Android Keystore اضافه شد.
+- شبکه و API: IPهای Wi-Fi/Ethernet اولویت دارند؛ onLost وقتی listener زنده است Offline جعلی نمی‌سازد؛ `POST /api/call-logs/sync` provider و outbox محلی را واقعاً refresh می‌کند.
+- تست‌های اضافه‌شده: policy lifecycle Android 15، CORS/scheme و تست concurrent Room برای get-or-insert و claim.
+- نتایج: `git diff --check` موفق و `python -m pytest backend/tests -q` برابر `5 passed`؛ `assembleDebug` و `testDebugUnitTest` آنلاین با `--refresh-dependencies` قبل از compile به‌علت resolve نشدن `com.android.tools.build:gradle:8.13.0` متوقف شدند. هیچ build سبزی ادعا نمی‌شود.

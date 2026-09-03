@@ -23,7 +23,7 @@ class GatewayBootReceiver : BroadcastReceiver() {
                 val settings = runBlocking { AppDatabase.getDatabase(context).settingsDao().getSettings() } ?: return@Thread
                 if (!settings.autostartEnabled || !settings.isGatewayEnabled) return@Thread
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                if (GatewayAutostartPolicy.useJobFallback(Build.VERSION.SDK_INT)) {
                     scheduleSafeJob(context)
                 } else {
                     ContextCompat.startForegroundService(context, Intent(context, SmsGatewayService::class.java))
@@ -57,4 +57,9 @@ class GatewayBootReceiver : BroadcastReceiver() {
             context.getSystemService(JobScheduler::class.java)?.cancel(JOB_ID)
         }
     }
+}
+
+object GatewayAutostartPolicy {
+    /** Android 15 blocks dataSync FGS launches directly from BOOT_COMPLETED. */
+    fun useJobFallback(sdkInt: Int): Boolean = sdkInt >= Build.VERSION_CODES.VANILLA_ICE_CREAM
 }

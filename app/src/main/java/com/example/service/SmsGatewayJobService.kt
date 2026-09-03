@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.job.JobParameters
 import android.app.job.JobService
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.os.Build
 import androidx.core.content.ContextCompat
 import com.example.data.local.AppDatabase
 import com.example.data.repository.CallLogRepository
@@ -32,6 +34,16 @@ class SmsGatewayJobService : JobService() {
                 val repository = SmsRepository(applicationContext)
                 val settings = AppDatabase.getDatabase(applicationContext).settingsDao().getSettings()
                 if (settings?.isGatewayEnabled == true) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                        runCatching {
+                            ContextCompat.startForegroundService(
+                                applicationContext,
+                                Intent(applicationContext, SmsGatewayService::class.java)
+                            )
+                        }.onFailure {
+                            repository.log("WARN", "شروع خودکار سرور گوشی توسط Android محدود شد", "Lifecycle")
+                        }
+                    }
                     repository.syncInboxAndDetectDeletions()
                     if (settings.serverUrl.isNotBlank() && settings.apiKey.isNotBlank()) {
                         repository.pollPendingMessagesFromServer()

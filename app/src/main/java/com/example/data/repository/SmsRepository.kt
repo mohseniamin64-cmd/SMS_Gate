@@ -24,6 +24,8 @@ import com.example.data.remote.WebhookPayload
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import retrofit2.HttpException
 import java.text.SimpleDateFormat
@@ -44,6 +46,8 @@ class SmsRepository(private val context: Context) {
     val queueFlow: Flow<List<SmsQueueItem>> = smsQueueDao.getAllQueueFlow()
     val tombstonesFlow: Flow<List<Tombstone>> = tombstoneDao.getAllTombstonesFlow()
     val logsFlow = logDao.getLogsFlow()
+    private val enqueueMutex = Mutex()
+    private val outgoingMutex = Mutex()
 
     suspend fun log(level: String, message: String, tag: String = "SmsRepository") {
         withContext(Dispatchers.IO) {
@@ -59,20 +63,20 @@ class SmsRepository(private val context: Context) {
         phoneNumber: String,
         messageBody: String,
         simSlot: Int
-    ): SmsQueueItem = withContext(Dispatchers.IO) {
-        val safeRequestId = requestId.trim().ifBlank { "phone_" + UUID.randomUUID() }
-        val existing = smsQueueDao.getByRequestId(safeRequestId)
-        if (existing != null) return@withContext existing
-        val item = SmsQueueItem(
-            requestId = safeRequestId,
-            phoneNumber = phoneNumber.trim(),
-            messageBody = messageBody.trim(),
-            simSlot = simSlot,
-            status = "PENDING"
-        )
-        smsQueueDao.insert(item)
-        log("INFO", "پیامک از API سرور گوشی در صف ثبت شد", "PhoneServer")
-        smsQueueDao.getByRequestId(safeRequestId) ?: item
+    ): SmsQueueItem = enqueueMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val safeRequestId = requestId.trim().ifBlank { "phone_" + UUID.randomUUID() }
+            val item = SmsQueueItem(
+                requestId = safeRequestId,
+                phoneNumber = phoneNumber.trim(),
+                messageBody = messageBody.trim(),
+                simSlot = simSlot,
+                status = "PENDING"
+            )
+            val saved = smsQueueDao.getOrInsert(item)
+            log("INFO", "پیامک از API سرور گوشی در صف ثبت شد", "PhoneServer")
+            saved
+        }
     }
 
     /**
@@ -273,20 +277,19 @@ class SmsRepository(private val context: Context) {
                 val phone = message.getFinalPhoneNumber()
                 val body = message.getFinalBody()
                 if (requestId.isBlank() || phone.isBlank() || body.isBlank()) return@forEach
-                if (smsQueueDao.getByRequestId(requestId) == null) {
-                    smsQueueDao.insert(
-                        SmsQueueItem(
-                            requestId = requestId,
-                            phoneNumber = phone,
-                            messageBody = body,
-                            simSlot = message.getFinalSimSlot(),
-                            status = "PENDING",
-                            scheduledAt = message.scheduledAt ?: 0,
-                            expiresAt = message.expiresAt ?: 0
-                        )
+                val existing = smsQueueDao.getByRequestId(requestId)
+                smsQueueDao.getOrInsert(
+                    SmsQueueItem(
+                        requestId = requestId,
+                        phoneNumber = phone,
+                        messageBody = body,
+                        simSlot = message.getFinalSimSlot(),
+                        status = "PENDING",
+                        scheduledAt = message.scheduledAt ?: 0,
+                        expiresAt = message.expiresAt ?: 0
                     )
-                    addedCount++
-                }
+                )
+                if (existing == null) addedCount++
             }
             SyncResult(true, "دریافت صف انجام شد؛ پیام جدید: " + addedCount)
         } catch (error: HttpException) {
@@ -300,75 +303,79 @@ class SmsRepository(private val context: Context) {
         }
     }
 
-    suspend fun processOutgoingQueue() = withContext(Dispatchers.IO) {
-        val settings = settingsDao.getSettings() ?: return@withContext
-        if (!settings.isGatewayEnabled) return@withContext
-        if (!isWithinWorkingHours(settings.workingHoursStart, settings.workingHoursEnd)) {
-            log("WARN", "صف خارج از ساعات کاری متوقف شد", "SmsSender")
-            return@withContext
-        }
+    suspend fun processOutgoingQueue() = outgoingMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val settings = settingsDao.getSettings() ?: return@withContext
+            if (!settings.isGatewayEnabled) return@withContext
+            if (!isWithinWorkingHours(settings.workingHoursStart, settings.workingHoursEnd)) {
+                log("WARN", "صف خارج از ساعات کاری متوقف شد", "SmsSender")
+                return@withContext
+            }
 
-        val pending = smsQueueDao.getPendingToProcess()
-        for (item in pending) {
-            if (isRateLimitExceeded(settings)) break
-            if (item.expiresAt > 0 && System.currentTimeMillis() > item.expiresAt) {
-                smsQueueDao.update(item.copy(status = "CANCELLED", errorMessage = "پیام منقضی شده است"))
-                notifyStatusChange(settings, item.requestId, "CANCELLED", "پیام منقضی شده است")
-                continue
-            }
-            smsQueueDao.update(item.copy(status = "PROCESSING", errorMessage = null))
-            if (settings.isTestMode) {
-                // Test mode is an explicit safety stop; it never fabricates SENT.
-                smsQueueDao.update(
-                    item.copy(
-                        status = "PENDING",
-                        errorMessage = "حالت تست فعال است؛ ارسال واقعی انجام نشد"
-                    )
-                )
-                continue
-            }
-            try {
-                val sentIntent = PendingIntent.getBroadcast(
-                    context,
-                    item.id,
-                    Intent("com.example.SMS_SENT").putExtra("item_id", item.id),
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                )
-                val deliveredIntent = PendingIntent.getBroadcast(
-                    context,
-                    item.id,
-                    Intent("com.example.SMS_DELIVERED").putExtra("item_id", item.id),
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                )
-                sendSmsViaManager(
-                    item.phoneNumber,
-                    item.messageBody,
-                    if (item.simSlot >= 0) item.simSlot else settings.simSlotSelection,
-                    sentIntent,
-                    deliveredIntent
-                )
-            } catch (_: Exception) {
-                val retryCount = item.retryCount + 1
-                if (retryCount >= 3) {
-                    smsQueueDao.update(
-                        item.copy(
-                            status = "FAILED",
-                            retryCount = retryCount,
-                            errorMessage = "ارسال پیامک ناموفق بود"
-                        )
-                    )
-                    notifyStatusChange(settings, item.requestId, "FAILED", "ارسال پیامک ناموفق بود")
-                } else {
+            val pending = smsQueueDao.getPendingToProcess()
+            for (candidate in pending) {
+                if (isRateLimitExceeded(settings)) break
+                if (smsQueueDao.claimPending(candidate.id) != 1) continue
+                val item = candidate.copy(status = "PROCESSING", errorMessage = null)
+                if (item.expiresAt > 0 && System.currentTimeMillis() > item.expiresAt) {
+                    smsQueueDao.update(item.copy(status = "CANCELLED", errorMessage = "پیام منقضی شده است"))
+                    notifyStatusChange(settings, item.requestId, "CANCELLED", "پیام منقضی شده است")
+                    continue
+                }
+                smsQueueDao.update(item.copy(status = "PROCESSING", errorMessage = null))
+                if (settings.isTestMode) {
+                    // Test mode is an explicit safety stop; it never fabricates SENT.
                     smsQueueDao.update(
                         item.copy(
                             status = "PENDING",
-                            retryCount = retryCount,
-                            errorMessage = "تلاش مجدد برای ارسال"
+                            errorMessage = "حالت تست فعال است؛ ارسال واقعی انجام نشد"
                         )
                     )
+                    continue
                 }
+                try {
+                    val sentIntent = PendingIntent.getBroadcast(
+                        context,
+                        item.id,
+                        Intent("com.example.SMS_SENT").putExtra("item_id", item.id),
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                    )
+                    val deliveredIntent = PendingIntent.getBroadcast(
+                        context,
+                        item.id,
+                        Intent("com.example.SMS_DELIVERED").putExtra("item_id", item.id),
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                    )
+                    sendSmsViaManager(
+                        item.phoneNumber,
+                        item.messageBody,
+                        if (item.simSlot >= 0) item.simSlot else settings.simSlotSelection,
+                        sentIntent,
+                        deliveredIntent
+                    )
+                } catch (_: Exception) {
+                    val retryCount = item.retryCount + 1
+                    if (retryCount >= 3) {
+                        smsQueueDao.update(
+                            item.copy(
+                                status = "FAILED",
+                                retryCount = retryCount,
+                                errorMessage = "ارسال پیامک ناموفق بود"
+                            )
+                        )
+                        notifyStatusChange(settings, item.requestId, "FAILED", "ارسال پیامک ناموفق بود")
+                    } else {
+                        smsQueueDao.update(
+                            item.copy(
+                                status = "PENDING",
+                                retryCount = retryCount,
+                                errorMessage = "تلاش مجدد برای ارسال"
+                            )
+                        )
+                    }
+                }
+                delay(1000)
             }
-            delay(1000)
         }
     }
 

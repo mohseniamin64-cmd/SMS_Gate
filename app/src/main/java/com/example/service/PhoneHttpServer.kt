@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.example.data.device.CallLogReader
+import com.example.data.repository.CallLogRepository
 import com.example.data.local.GatewaySettings
+import com.example.data.remote.PhoneServerCors
 import com.example.data.remote.PhoneNetworkAddresses
 import com.example.data.remote.PhoneServerSecurity
 import com.example.data.remote.PhoneServerStatusStore
@@ -17,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 import java.io.BufferedOutputStream
 import java.io.IOException
@@ -49,10 +52,19 @@ class PhoneHttpServer(
             try {
                 val socket = ServerSocket(activePort, 50)
                 serverSocket = socket
-                PhoneServerStatusStore.running(activePort, PhoneNetworkAddresses.localIpv4Addresses())
+                PhoneServerStatusStore.running(activePort, PhoneNetworkAddresses.localIpv4Addresses(context))
                 while (true) {
                     val client = socket.accept()
-                    launch { handle(client, settings.phoneServerApiKey) }
+                    launch {
+                        handle(
+                            client,
+                            ServerConfig(
+                                apiKey = settings.phoneServerApiKey,
+                                allowedOrigin = settings.phoneServerAllowedOrigin,
+                                lanOnly = settings.phoneServerLanOnly
+                            )
+                        )
+                    }
                 }
             } catch (_: SocketException) {
                 if (currentCoroutineContext().isActive) PhoneServerStatusStore.stopped(activePort)
@@ -74,23 +86,33 @@ class PhoneHttpServer(
         PhoneServerStatusStore.stopped(activePort)
     }
 
-    private suspend fun handle(socket: Socket, apiKey: String) {
+    private suspend fun handle(socket: Socket, config: ServerConfig) {
         socket.use { client ->
             client.soTimeout = REQUEST_TIMEOUT_MS.toInt()
             try {
                 val request = readRequest(client) ?: return
-                if (request.method == "OPTIONS") {
-                    writeResponse(client, 204, "")
+                if (config.lanOnly && !isLanClient(client)) {
+                    writeResponse(client, 403, jsonError("فقط اتصال شبکهٔ محلی مجاز است"), request, config)
                     return
                 }
-                if (!PhoneServerSecurity.isAuthorized(request.headers, apiKey)) {
-                    writeResponse(client, 401, jsonError("احراز هویت لازم است"))
+                if (request.method == "OPTIONS") {
+                    if (!PhoneServerCors.allows(request.headers["origin"], config.allowedOrigin)) {
+                        writeResponse(client, 403, jsonError("Origin مجاز نیست"), request, config)
+                        return
+                    }
+                    writeResponse(client, 204, "", request, config)
+                    return
+                }
+                if (!PhoneServerSecurity.isAuthorized(request.headers, config.apiKey)) {
+                    writeResponse(client, 401, jsonError("احراز هویت لازم است"), request, config)
                     return
                 }
                 val response = route(request)
-                writeResponse(client, response.status, response.body)
+                writeResponse(client, response.status, response.body, request, config)
             } catch (_: Exception) {
-                runCatching { writeResponse(client, 500, jsonError("خطای داخلی سرور")) }
+                runCatching {
+                    writeResponse(client, 500, jsonError("خطای داخلی سرور"), null, config)
+                }
             }
         }
     }
@@ -110,7 +132,7 @@ class PhoneHttpServer(
             request.method == "GET" && request.path == "/api/call-logs" ->
                 readCallLogs()
             request.method == "POST" && request.path == "/api/call-logs/sync" ->
-                readCallLogs()
+                syncCallLogs()
             else -> HttpResponse(404, jsonError("مسیر API پیدا نشد"))
         }
     }
@@ -175,10 +197,28 @@ class PhoneHttpServer(
         return HttpResponse(200, "{\"success\":true,\"total\":${calls.size},\"calls\":[$items]}")
     }
 
+    private suspend fun syncCallLogs(): HttpResponse {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+            return HttpResponse(403, jsonError("مجوز گزارش تماس داده نشده است"))
+        }
+        val settings = repository.settingsDao.getSettings() ?: GatewaySettings()
+        val entries = runCatching {
+            CallLogRepository(context).refreshFromProvider(settings.deviceId)
+        }.getOrElse {
+            return HttpResponse(503, jsonError("به‌روزرسانی گزارش تماس انجام نشد"))
+        }
+        val pending = CallLogRepository(context).pendingCountFlow(settings.deviceId).first()
+        return HttpResponse(
+            200,
+            "{\"success\":true,\"refreshed\":${entries.size},\"pendingForLegacyPanel\":$pending," +
+                "\"message\":${JSONObject.quote("گزارش تماس محلی به‌روزرسانی شد")}}"
+        )
+    }
+
     private suspend fun statusJson(): String {
         val settings = repository.settingsDao.getSettings() ?: GatewaySettings()
         val queued = repository.smsQueueDao.getQueueByStatus("PENDING").size
-        val addresses = PhoneNetworkAddresses.localIpv4Addresses()
+        val addresses = PhoneNetworkAddresses.localIpv4Addresses(context)
         val addressesJson = addresses.joinToString(",") { JSONObject.quote(it) }
         return "{\"success\":true,\"service\":\"sms-center-phone\",\"deviceId\":${JSONObject.quote(settings.deviceId)}," +
             "\"running\":true,\"port\":${settings.phoneServerPort},\"addresses\":[$addressesJson],\"pendingSms\":$queued}"
@@ -235,7 +275,13 @@ class PhoneHttpServer(
         return null
     }
 
-    private fun writeResponse(socket: Socket, status: Int, body: String) {
+    private fun writeResponse(
+        socket: Socket,
+        status: Int,
+        body: String,
+        request: HttpRequest?,
+        config: ServerConfig
+    ) {
         val bytes = body.toByteArray(StandardCharsets.UTF_8)
         val reason = when (status) {
             200 -> "OK"
@@ -248,11 +294,20 @@ class PhoneHttpServer(
             503 -> "Service Unavailable"
             else -> "Internal Server Error"
         }
+        val corsOrigin = request?.headers?.get("origin")
+            ?.takeIf { PhoneServerCors.allows(it, config.allowedOrigin) }
+        val corsHeaders = if (corsOrigin != null) {
+            "Access-Control-Allow-Origin: $corsOrigin\r\n" +
+                "Access-Control-Allow-Methods: ${PhoneServerCors.ALLOW_METHODS}\r\n" +
+                "Access-Control-Allow-Headers: ${PhoneServerCors.ALLOW_HEADERS}\r\n" +
+                "Vary: Origin\r\n"
+        } else {
+            ""
+        }
         val header = "HTTP/1.1 $status $reason\r\n" +
             "Content-Type: application/json; charset=utf-8\r\n" +
             "Content-Length: ${bytes.size}\r\n" +
-            "Access-Control-Allow-Origin: *\r\n" +
-            "Access-Control-Allow-Headers: Authorization, Content-Type, X-API-Key\r\n" +
+            corsHeaders +
             "Connection: close\r\n\r\n"
         BufferedOutputStream(socket.getOutputStream()).use { output ->
             output.write(header.toByteArray(StandardCharsets.ISO_8859_1))
@@ -263,6 +318,9 @@ class PhoneHttpServer(
 
     private fun jsonError(message: String): String = "{\"success\":false,\"error\":${JSONObject.quote(message)}}"
 
+    private fun isLanClient(socket: Socket): Boolean =
+        socket.inetAddress.isLoopbackAddress || socket.inetAddress.isSiteLocalAddress
+
     private data class HttpRequest(
         val method: String,
         val path: String,
@@ -272,6 +330,12 @@ class PhoneHttpServer(
     )
 
     private data class HttpResponse(val status: Int, val body: String)
+
+    private data class ServerConfig(
+        val apiKey: String,
+        val allowedOrigin: String,
+        val lanOnly: Boolean
+    )
 
     companion object {
         private const val MIN_PORT = 1024

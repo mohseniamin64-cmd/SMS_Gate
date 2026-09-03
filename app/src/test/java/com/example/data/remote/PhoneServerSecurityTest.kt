@@ -20,6 +20,9 @@ class PhoneServerSecurityTest {
         assertFalse(PhoneServerSecurity.isAuthorized(emptyMap(), key))
         assertFalse(PhoneServerSecurity.isAuthorized(mapOf("authorization" to "Bearer wrong"), key))
         assertFalse(PhoneServerSecurity.isAuthorized(mapOf("x-api-key" to key), ""))
+        assertFalse(PhoneServerSecurity.isAuthorized(mapOf("authorization" to "Basic $key"), key))
+        assertFalse(PhoneServerSecurity.isAuthorized(mapOf("authorization" to "Bearer$key"), key))
+        assertFalse(PhoneServerSecurity.isAuthorized(mapOf("authorization" to "Bearer $key extra"), key))
     }
 
     @Test
@@ -29,5 +32,15 @@ class PhoneServerSecurityTest {
 
         assertTrue(first.length >= 40)
         assertTrue(first != second)
+    }
+
+    @Test
+    fun `cors requires exact configured origin`() {
+        assertTrue(PhoneServerCors.allows("http://localhost:3000", "http://localhost:3000"))
+        assertFalse(PhoneServerCors.allows("http://localhost:3001", "http://localhost:3000"))
+        assertFalse(PhoneServerCors.allows("http://localhost:3000", "*"))
+        assertTrue(PhoneServerCors.ALLOW_METHODS.contains("GET"))
+        assertTrue(PhoneServerCors.ALLOW_METHODS.contains("POST"))
+        assertTrue(PhoneServerCors.ALLOW_METHODS.contains("OPTIONS"))
     }
 }

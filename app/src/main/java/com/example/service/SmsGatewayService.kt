@@ -21,7 +21,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.data.repository.CallLogRepository
 import com.example.data.repository.SmsRepository
-import com.example.data.remote.PhoneServerSecurity
+import com.example.data.remote.PhoneServerKeyStore
 import com.example.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -202,10 +202,10 @@ class SmsGatewayService : Service() {
         val current = repository.settingsDao.getSettings()
             ?: com.example.data.local.GatewaySettings()
         val port = current.phoneServerPort.coerceIn(1024, 65_535)
-        val key = current.phoneServerApiKey.ifBlank { PhoneServerSecurity.generateApiKey() }
-        val updated = current.copy(phoneServerPort = port, phoneServerApiKey = key)
+        val key = PhoneServerKeyStore(this).getOrCreate(current.phoneServerApiKey)
+        val updated = current.copy(phoneServerPort = port, phoneServerApiKey = "")
         if (updated != current) repository.settingsDao.saveSettings(updated)
-        return updated
+        return updated.copy(phoneServerApiKey = key)
     }
 
     companion object {

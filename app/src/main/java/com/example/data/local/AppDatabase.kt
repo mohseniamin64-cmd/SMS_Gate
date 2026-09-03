@@ -44,7 +44,9 @@ data class GatewaySettings(
     val autostartEnabled: Boolean = false,
     val callLogSyncEnabled: Boolean = false,
     val phoneServerPort: Int = 8080,
-    val phoneServerApiKey: String = ""
+    val phoneServerApiKey: String = "",
+    val phoneServerAllowedOrigin: String = "",
+    val phoneServerLanOnly: Boolean = true
 )
 
 @Entity(tableName = "synced_sms")
@@ -76,7 +78,10 @@ data class Tombstone(
     val deletedAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "sms_queue")
+@Entity(
+    tableName = "sms_queue",
+    indices = [Index(value = ["requestDedupeKey"], unique = true)]
+)
 data class SmsQueueItem(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val requestId: String,
@@ -88,7 +93,8 @@ data class SmsQueueItem(
     val createdAt: Long = System.currentTimeMillis(),
     val scheduledAt: Long = 0,
     val expiresAt: Long = 0,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val requestDedupeKey: String? = null
 )
 
 @Entity(tableName = "log_entries")
@@ -183,6 +189,15 @@ interface SmsQueueDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(item: SmsQueueItem): Long
 
+    @Transaction
+    suspend fun getOrInsert(item: SmsQueueItem): SmsQueueItem {
+        val normalized = item.copy(requestDedupeKey = item.requestId)
+        return getByRequestId(normalized.requestId) ?: run {
+            insert(normalized)
+            getByRequestId(normalized.requestId) ?: normalized
+        }
+    }
+
     @Update
     suspend fun update(item: SmsQueueItem)
 
@@ -191,6 +206,9 @@ interface SmsQueueDao {
 
     @Query("SELECT * FROM sms_queue WHERE requestId = :requestId LIMIT 1")
     suspend fun getByRequestId(requestId: String): SmsQueueItem?
+
+    @Query("UPDATE sms_queue SET status = 'PROCESSING', errorMessage = NULL WHERE id = :id AND status = 'PENDING'")
+    suspend fun claimPending(id: Int): Int
 
     @Query("DELETE FROM sms_queue WHERE id = :id")
     suspend fun deleteById(id: Int)
@@ -264,6 +282,19 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE sms_queue ADD COLUMN requestDedupeKey TEXT")
+        database.execSQL(
+            "UPDATE sms_queue SET requestDedupeKey = requestId " +
+                "WHERE requestId IN (SELECT requestId FROM sms_queue GROUP BY requestId HAVING COUNT(*) = 1)"
+        )
+        database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_sms_queue_requestDedupeKey ON sms_queue(requestDedupeKey)")
+        database.execSQL("ALTER TABLE gateway_settings ADD COLUMN phoneServerAllowedOrigin TEXT NOT NULL DEFAULT ''")
+        database.execSQL("ALTER TABLE gateway_settings ADD COLUMN phoneServerLanOnly INTEGER NOT NULL DEFAULT 1")
+    }
+}
+
 @Database(
     entities = [
         GatewaySettings::class,
@@ -273,7 +304,7 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         LogEntry::class,
         CallLogUploadItem::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -295,7 +326,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "sms_center_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

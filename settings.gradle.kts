@@ -1,4 +1,13 @@
 pluginManagement {
+  resolutionStrategy {
+    eachPlugin {
+      if (requested.id.id == "com.android.application") {
+        useModule("com.android.tools.build:gradle:" + requested.version)
+      } else if (requested.id.id == "com.google.devtools.ksp") {
+        useModule("com.google.devtools.ksp:symbol-processing-gradle-plugin:" + requested.version)
+      }
+    }
+  }
   repositories {
     google {
       content {

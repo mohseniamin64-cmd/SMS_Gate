@@ -15,7 +15,14 @@ data class SmsSyncPlan(
     val isValid: Boolean
 )
 
-internal fun SyncedSms.tombstoneKey(): SmsTombstoneKey = SmsTombstoneKey(address, date, getFingerprint())
+internal fun SyncedSms.tombstoneKey(): SmsTombstoneKey =
+    SmsTombstoneKey(address, date, getFingerprint())
+
+internal fun SyncedSms.legacyTombstoneKey(): SmsTombstoneKey =
+    SmsTombstoneKey(address, date, getLegacyFingerprint())
+
+internal fun SyncedSms.matchesTombstone(tombstones: Set<SmsTombstoneKey>): Boolean =
+    tombstoneKey() in tombstones || legacyTombstoneKey() in tombstones
 
 internal object SmsSyncPlanner {
     fun plan(
@@ -30,7 +37,7 @@ internal object SmsSyncPlanner {
         val localIds = localMessages.asSequence().map { it.id }.toSet()
         val providerMessages = providerSnapshot.messagesById
         val newMessages = providerMessages.values.filter { message ->
-            message.id !in localIds && message.tombstoneKey() !in tombstones
+            message.id !in localIds && !message.matchesTombstone(tombstones)
         }
         val deletedMessages = localMessages.filter { it.id !in providerMessages }
         return SmsSyncPlan(newMessages, deletedMessages, isValid = true)

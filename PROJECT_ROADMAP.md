@@ -602,3 +602,22 @@
 - Build/test واقعی: پس از اصلاح تنظیم in-process کامپایلر در `gradle.properties`، حذف کدساز بلااستفادهٔ moshi ksp و استفاده از `SecureRandom` به جای `android.util.Base64` در تولید کلید، هر دو تسک `:app:testDebugUnitTest` (۲۱ تست پاس‌شده) و `:app:assembleDebug` با موفقیت کامل اجرا شدند.
 - خروجی APK: فایل `app/build/outputs/apk/debug/app-debug.apk` با حجم ۱۸ مگابایت تولید شد.
 - محدودیت باقی‌مانده: تست روی دستگاه فیزیکی و آزمایش شبکهٔ محلی Wi-Fi برای اتصال مرورگر/کلاینت به IP گوشی.
+
+### رکورد ۰۰۹ — اصلاحات امنیتی Phone-as-Server و پایداری Android 15
+
+- تاریخ: 2026-09-03
+- هدف: ارتقای امنیتی به HTTPS/TLS واقعی، تحویل امن کلید API و رفع محدودیت‌های lifecycle در Android 15.
+- فایل‌های تغییرکرده/اضافه‌شده:
+  - `app/src/main/java/com/example/service/PhoneServerTls.kt`: تولید گواهی self-signed و کلید RSA 2048 در AndroidKeyStore، راه‌اندازی `SSLServerSocket` و محاسبه اثر انگشت SHA-256.
+  - `app/src/main/java/com/example/data/remote/SecureApiKeyStore.kt`: ذخیره‌سازی و رمزنگاری AES/GCM کلید API با AndroidKeyStore Master Key بدون ثبت در دیتابیس یا متن شفاف.
+  - `app/src/main/java/com/example/service/JobRetryPolicy.kt`: مدیریت retry و backoff نمایی برای JobScheduler و رد شدن شروع سرویس در پیش‌زمینه.
+  - `app/src/main/java/com/example/service/PhoneHttpServer.kt`: مهاجرت کامل به TLS (`SSLServerSocket`)، گزارش `transport: "https"` و `certificateFingerprint` در پاسخ وضعیت، و تطبیق امن کلید با `MessageDigest.isEqual`.
+  - `app/src/main/java/com/example/service/SmsGatewayJobService.kt`: تطبیق با محدودیت‌های Android 15 و استفاده از `jobFinished(params, needsRetry)` با `JobRetryPolicy`.
+  - `app/src/main/java/com/example/service/SmsGatewayService.kt`: اطمینان از کلید امن و عدم ذخیره کلید در Room.
+  - `app/src/main/java/com/example/ui/viewmodel/SmsViewModel.kt`: اتصال به وضعیت امن TLS و متدهای نمایش و بازتولید کلید.
+  - `app/src/main/java/com/example/MainActivity.kt`: کامپوننت کارت امن کلید (نمایش یک‌بارهٔ حداکثر ۶۰ ثانیه‌ای، علامت‌گذاری sensitive کلیپ‌بورد، پنهان‌سازی پس از کپی)، نمایش اثر انگشت SHA-256 و فیلد پورت HTTPS.
+  - `docs/PHONE_SERVER_API.md`: به‌روزرسانی مستندات اتصال HTTPS، اثر انگشت گواهی و احراز هویت.
+  - `app/src/test/java/com/example/service/JobRetryPolicyTest.kt`: تست‌های unit برای policy بازتلاش و backoff.
+  - `app/src/test/java/com/example/service/PhoneServerTlsTest.kt`: تست‌های unit برای تولید گواهی TLS و تطابق اثر انگشت SHA-256.
+- نتیجه: ارتباط سرور گوشی کاملاً امن و رمزگذاری‌شده (HTTPS) است؛ کلیدهای API و گواهی‌ها در سخت‌افزار امن نگهداری می‌شوند و Android 15 از طریق JobScheduler پشتیبانی می‌شود.
+

@@ -2,12 +2,16 @@ package com.example
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PersistableBundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -15,6 +19,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +47,7 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -56,6 +62,9 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.ContactPhone
@@ -93,6 +102,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -107,6 +117,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -132,6 +143,7 @@ import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.CallLogState
 import com.example.ui.viewmodel.ContactsState
 import com.example.ui.viewmodel.SmsViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -436,7 +448,9 @@ fun SmsGatewayAppScreen(
                             onRetry = viewModel::retryGatewayConnection,
                             onSync = viewModel::triggerManualSync,
                             onPermissions = onGrantPermissions,
-                            onSettings = { openTopLevel(AppDestination.SETTINGS) }
+                            onSettings = { openTopLevel(AppDestination.SETTINGS) },
+                            onRevealApiKey = viewModel::getRevealedApiKey,
+                            onRegenerateApiKey = viewModel::regenerateApiKey
                         )
                         AppDestination.SETTINGS -> SettingsPage(settings, viewModel::saveSettings)
                         AppDestination.LOGS -> LogsPage(logs, viewModel::clearSystemLogs)
@@ -530,7 +544,9 @@ private fun GatewayPage(
     onRetry: () -> Unit,
     onSync: () -> Unit,
     onPermissions: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    onRevealApiKey: () -> String,
+    onRegenerateApiKey: () -> String
 ) {
     val context = LocalContext.current
     LazyColumn(
@@ -543,14 +559,11 @@ private fun GatewayPage(
             GatewayHero(connection, onConnect, onDisconnect, onRetry)
         }
         item { ConnectionStateCard(connection) }
-        if (settings.phoneServerApiKey.isBlank()) {
-            item {
-                ErrorState(
-                    "کلید API سرور گوشی هنوز ساخته نشده است",
-                    "با فعال‌کردن Gateway یک کلید امن ساخته می‌شود؛ کلاینت وب باید همان کلید را ارسال کند.",
-                    onSettings
-                )
-            }
+        item {
+            ApiKeySecureCard(
+                onRevealKey = onRevealApiKey,
+                onRegenerateKey = onRegenerateApiKey
+            )
         }
         if (!hasPermission(context, Manifest.permission.READ_SMS) ||
             !hasPermission(context, Manifest.permission.SEND_SMS)
@@ -656,7 +669,163 @@ private fun ConnectionStateCard(connection: LanConnectionState) {
                 Text(connectionLabel(connection))
             }
             if (connection is LanConnectionState.Connected) {
-                Text("Endpoint: " + connection.endpoint, style = MaterialTheme.typography.bodySmall)
+                Text("آدرس سرور (Endpoint): " + connection.endpoint, style = MaterialTheme.typography.bodySmall)
+                Text("پروتکل انتقال: HTTPS (TLS واقعی)", style = MaterialTheme.typography.bodySmall)
+                connection.certificateFingerprint?.let { fp ->
+                    Spacer(Modifier.height(4.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "اثر انگشت گواهی TLS (SHA-256):",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                fp,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                "این اثر انگشت را در کلاینت وب/رایانه جهت تطبیق گواهی بررسی کنید.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApiKeySecureCard(
+    onRevealKey: () -> String,
+    onRegenerateKey: () -> String
+) {
+    val context = LocalContext.current
+    var revealedKey by remember { mutableStateOf<String?>(null) }
+    var secondsLeft by remember { mutableIntStateOf(60) }
+
+    LaunchedEffect(revealedKey) {
+        if (revealedKey != null) {
+            secondsLeft = 60
+            while (secondsLeft > 0) {
+                delay(1000L)
+                secondsLeft--
+            }
+            revealedKey = null
+        }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.VpnKey,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "کلید امن API سرور گوشی",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                if (revealedKey != null) {
+                    Text(
+                        "انقضا: $secondsLeft ثانیه",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+
+            Text(
+                "کلید در Android Keystore با رمزنگاری سخت‌افزاری AES/GCM محافظت می‌شود و در دیتابیس یا گزارش‌ها ذخیره نمی‌شود.",
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            if (revealedKey == null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { revealedKey = onRevealKey() },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Visibility, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("نمایش یک‌بارهٔ کلید")
+                    }
+                }
+            } else {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = revealedKey.orEmpty(),
+                        modifier = Modifier.padding(12.dp),
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            val keyToCopy = revealedKey.orEmpty()
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = ClipData.newPlainText("API Key", keyToCopy).apply {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    description.extras = PersistableBundle().apply {
+                                        putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                                    }
+                                }
+                            }
+                            clipboard.setPrimaryClip(clip)
+                            revealedKey = null
+                            Toast.makeText(context, "کلید کپی و پنهان شد", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("کپی و پنهان‌سازی")
+                    }
+
+                    OutlinedButton(
+                        onClick = { revealedKey = null },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.VisibilityOff, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("پنهان‌سازی")
+                    }
+                }
             }
         }
     }
@@ -1238,7 +1407,6 @@ private fun SettingsPage(settings: GatewaySettings, save: (GatewaySettings) -> U
     var advanced by rememberSaveable { mutableStateOf(false) }
     var url by remember(settings) { mutableStateOf(settings.serverUrl) }
     var key by remember(settings) { mutableStateOf(settings.apiKey) }
-    var phoneKey by remember(settings) { mutableStateOf(settings.phoneServerApiKey) }
     var phonePort by remember(settings) { mutableStateOf(settings.phoneServerPort.toString()) }
     var device by remember(settings) { mutableStateOf(settings.deviceId) }
     var interval by remember(settings) { mutableStateOf(settings.syncIntervalSeconds.toString()) }
@@ -1318,15 +1486,21 @@ private fun SettingsPage(settings: GatewaySettings, save: (GatewaySettings) -> U
                 Field("کلید API", key, { key = it }, "برای احراز هویت اتصال لازم است", true)
             }
             item {
-                Field(
-                    "کلید API سرور گوشی",
-                    phoneKey,
-                    { phoneKey = it },
-                    "کلاینت وب/رایانه باید این کلید را با Authorization: Bearer ارسال کند"
-                )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("امنیت کلید سرور گوشی", fontWeight = FontWeight.Bold)
+                        Text(
+                            "کلید API سرور گوشی با AES/GCM داخل Android Keystore محافظت می‌شود و در دیتابیس یا متن ذخیره نمی‌شود. جهت مشاهدهٔ یک‌باره یا کپی امن آن، به تب درگاه پیامک (Gateway) مراجعه کنید.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
             }
             item {
-                Field("پورت HTTP سرور گوشی", phonePort, { phonePort = it }, "بین 1024 و 65535")
+                Field("پورت HTTPS سرور گوشی", phonePort, { phonePort = it }, "بین 1024 و 65535")
             }
             item {
                 Field("شناسه یکتای دستگاه", device, { device = it }, "در Contacts یا Call Log استفاده نمی‌شود")
@@ -1355,7 +1529,7 @@ private fun SettingsPage(settings: GatewaySettings, save: (GatewaySettings) -> U
                         settings.copy(
                             serverUrl = url,
                             apiKey = key,
-                            phoneServerApiKey = phoneKey,
+                            phoneServerApiKey = "",
                             phoneServerPort = phonePort.toIntOrNull()?.coerceIn(1024, 65_535)
                                 ?: settings.phoneServerPort,
                             deviceId = device,

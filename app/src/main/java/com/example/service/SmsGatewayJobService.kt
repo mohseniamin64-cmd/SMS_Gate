@@ -3,7 +3,9 @@ package com.example.service
 import android.Manifest
 import android.app.job.JobParameters
 import android.app.job.JobService
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.content.ContextCompat
 import com.example.data.local.AppDatabase
 import com.example.data.repository.CallLogRepository
@@ -28,10 +30,23 @@ class SmsGatewayJobService : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
         runningJob?.cancel()
         runningJob = scope.launch {
+            var needsRetry = false
             try {
-                val repository = SmsRepository(applicationContext)
                 val settings = AppDatabase.getDatabase(applicationContext).settingsDao().getSettings()
                 if (settings?.isGatewayEnabled == true) {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                        try {
+                            ContextCompat.startForegroundService(
+                                applicationContext,
+                                Intent(applicationContext, SmsGatewayService::class.java)
+                            )
+                        } catch (e: Throwable) {
+                            if (JobRetryPolicy.shouldRetry(e)) {
+                                needsRetry = true
+                            }
+                        }
+                    }
+                    val repository = SmsRepository(applicationContext)
                     repository.syncInboxAndDetectDeletions()
                     if (settings.serverUrl.isNotBlank() && settings.apiKey.isNotBlank()) {
                         repository.pollPendingMessagesFromServer()
@@ -49,8 +64,12 @@ class SmsGatewayJobService : JobService() {
                         calls.syncPending(settings)
                     }
                 }
+            } catch (e: Throwable) {
+                if (JobRetryPolicy.shouldRetry(e)) {
+                    needsRetry = true
+                }
             } finally {
-                jobFinished(params, false)
+                jobFinished(params, needsRetry)
             }
         }
         return true

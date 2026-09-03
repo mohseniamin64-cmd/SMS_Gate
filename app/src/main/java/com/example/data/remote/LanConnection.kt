@@ -77,7 +77,10 @@ object LanEndpointValidator {
 sealed interface LanConnectionState {
     data object Disconnected : LanConnectionState
     data object Connecting : LanConnectionState
-    data class Connected(val endpoint: String) : LanConnectionState
+    data class Connected(
+        val endpoint: String,
+        val certificateFingerprint: String? = null
+    ) : LanConnectionState
     data class Error(val message: String) : LanConnectionState
     data class Offline(val message: String) : LanConnectionState
 }

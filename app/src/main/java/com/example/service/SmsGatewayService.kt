@@ -202,8 +202,8 @@ class SmsGatewayService : Service() {
         val current = repository.settingsDao.getSettings()
             ?: com.example.data.local.GatewaySettings()
         val port = current.phoneServerPort.coerceIn(1024, 65_535)
-        val key = current.phoneServerApiKey.ifBlank { PhoneServerSecurity.generateApiKey() }
-        val updated = current.copy(phoneServerPort = port, phoneServerApiKey = key)
+        com.example.data.remote.SecureApiKeyStore.getOrCreateApiKey(applicationContext)
+        val updated = current.copy(phoneServerPort = port, phoneServerApiKey = "")
         if (updated != current) repository.settingsDao.saveSettings(updated)
         return updated
     }

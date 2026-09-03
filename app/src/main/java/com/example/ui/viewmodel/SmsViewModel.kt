@@ -116,7 +116,8 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
                 _lanConnectionState.value = when {
                     server.error != null -> LanConnectionState.Error(server.error)
                     server.running -> LanConnectionState.Connected(
-                        server.primaryEndpoint ?: "IP در دسترس نیست:${server.port}"
+                        endpoint = server.primaryEndpoint ?: "https://IP_UNAVAILABLE:${server.port}",
+                        certificateFingerprint = server.certificateFingerprint
                     )
                     settingsState.value.isGatewayEnabled -> LanConnectionState.Connecting
                     else -> LanConnectionState.Disconnected
@@ -136,18 +137,28 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
         _toastMessage.value = null
     }
 
+    fun getRevealedApiKey(): String {
+        return com.example.data.remote.SecureApiKeyStore.getOrCreateApiKey(getApplication())
+    }
+
+    fun regenerateApiKey(): String {
+        val newKey = com.example.data.remote.PhoneServerSecurity.generateApiKey()
+        com.example.data.remote.SecureApiKeyStore.saveApiKey(getApplication(), newKey)
+        return newKey
+    }
+
     fun connectGateway() {
         if (_lanConnectionState.value is LanConnectionState.Connecting) return
         viewModelScope.launch {
             val settings = settingsState.value
-            val key = settings.phoneServerApiKey.ifBlank { PhoneServerSecurity.generateApiKey() }
+            com.example.data.remote.SecureApiKeyStore.getOrCreateApiKey(getApplication())
             val updated = settings.copy(
                 phoneServerPort = settings.phoneServerPort.coerceIn(1024, 65_535),
-                phoneServerApiKey = key,
+                phoneServerApiKey = "",
                 isGatewayEnabled = true
             )
             repository.settingsDao.saveSettings(updated)
-            repository.log("INFO", "سرور HTTP گوشی فعال شد", "Gateway")
+            repository.log("INFO", "سرور HTTPS گوشی فعال شد", "Gateway")
             _lanConnectionState.value = LanConnectionState.Connecting
             startService()
         }

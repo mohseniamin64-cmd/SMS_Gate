@@ -9,6 +9,7 @@ import com.example.data.local.GatewaySettings
 import com.example.data.remote.PhoneNetworkAddresses
 import com.example.data.remote.PhoneServerSecurity
 import com.example.data.remote.PhoneServerStatusStore
+import com.example.data.remote.SecureApiKeyStore
 import com.example.data.repository.SmsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,19 +48,25 @@ class PhoneHttpServer(
         PhoneServerStatusStore.starting(activePort)
         acceptJob = scope.launch(Dispatchers.IO) {
             try {
-                val socket = ServerSocket(activePort, 50)
+                val (socket, fingerprint) = PhoneServerTls.createSSLServerSocket(activePort)
                 serverSocket = socket
-                PhoneServerStatusStore.running(activePort, PhoneNetworkAddresses.localIpv4Addresses())
+                PhoneServerStatusStore.running(
+                    port = activePort,
+                    addresses = PhoneNetworkAddresses.localIpv4Addresses(),
+                    certificateFingerprint = fingerprint
+                )
+                val expectedApiKey = SecureApiKeyStore.getApiKey(context)
+                    ?: settings.phoneServerApiKey.ifBlank { SecureApiKeyStore.getOrCreateApiKey(context) }
                 while (true) {
                     val client = socket.accept()
-                    launch { handle(client, settings.phoneServerApiKey) }
+                    launch { handle(client, expectedApiKey) }
                 }
             } catch (_: SocketException) {
                 if (currentCoroutineContext().isActive) PhoneServerStatusStore.stopped(activePort)
             } catch (_: IOException) {
                 PhoneServerStatusStore.failed(activePort, "پورت سرور گوشی قابل استفاده نیست")
             } catch (_: Exception) {
-                PhoneServerStatusStore.failed(activePort, "راه‌اندازی سرور گوشی ناموفق بود")
+                PhoneServerStatusStore.failed(activePort, "راه‌اندازی امن سرور گوشی ناموفق بود")
             } finally {
                 serverSocket = null
             }
@@ -178,10 +185,23 @@ class PhoneHttpServer(
     private suspend fun statusJson(): String {
         val settings = repository.settingsDao.getSettings() ?: GatewaySettings()
         val queued = repository.smsQueueDao.getQueueByStatus("PENDING").size
-        val addresses = PhoneNetworkAddresses.localIpv4Addresses()
+        val serverState = PhoneServerStatusStore.state.value
+        val addresses = if (serverState.running) {
+            serverState.addresses
+        } else {
+            PhoneNetworkAddresses.localIpv4Addresses()
+        }
         val addressesJson = addresses.joinToString(",") { JSONObject.quote(it) }
+        val fpJson = serverState.certificateFingerprint?.let { ",\"certificateFingerprint\":${JSONObject.quote(it)}" }
+            ?: runCatching {
+                val fp = PhoneServerTls.getCertificateFingerprint()
+                ",\"certificateFingerprint\":${JSONObject.quote(fp)}"
+            }.getOrDefault("")
+        val errorJson = serverState.error?.let { ",\"error\":${JSONObject.quote(it)}" } ?: ""
         return "{\"success\":true,\"service\":\"sms-center-phone\",\"deviceId\":${JSONObject.quote(settings.deviceId)}," +
-            "\"running\":true,\"port\":${settings.phoneServerPort},\"addresses\":[$addressesJson],\"pendingSms\":$queued}"
+            "\"transport\":\"https\"," +
+            "\"running\":${serverState.running},\"port\":${serverState.port},\"addresses\":[$addressesJson],\"pendingSms\":$queued" +
+            fpJson + errorJson + "}"
     }
 
     private fun readRequest(socket: Socket): HttpRequest? {

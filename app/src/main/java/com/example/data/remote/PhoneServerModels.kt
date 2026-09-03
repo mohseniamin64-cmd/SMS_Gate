@@ -12,10 +12,12 @@ data class PhoneServerStatus(
     val running: Boolean = false,
     val addresses: List<String> = emptyList(),
     val port: Int = 8080,
-    val error: String? = null
+    val error: String? = null,
+    val transport: String = "https",
+    val certificateFingerprint: String? = null
 ) {
     val primaryEndpoint: String?
-        get() = addresses.firstOrNull()?.let { "$it:$port" }
+        get() = addresses.firstOrNull()?.let { "https://$it:$port" }
 }
 
 object PhoneServerStatusStore {
@@ -26,8 +28,14 @@ object PhoneServerStatusStore {
         _state.value = PhoneServerStatus(running = false, port = port)
     }
 
-    fun running(port: Int, addresses: List<String>) {
-        _state.value = PhoneServerStatus(running = true, port = port, addresses = addresses)
+    fun running(port: Int, addresses: List<String>, certificateFingerprint: String? = null) {
+        _state.value = PhoneServerStatus(
+            running = true,
+            port = port,
+            addresses = addresses,
+            transport = "https",
+            certificateFingerprint = certificateFingerprint
+        )
     }
 
     fun stopped(port: Int = _state.value.port) {

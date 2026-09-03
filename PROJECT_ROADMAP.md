@@ -48,6 +48,16 @@
 
 تیک‌های بالا فقط بررسی وضعیت موجود هستند، نه تأیید عملیاتی قابلیت‌ها.
 
+### اصلاح Back و navigation رابط کاربری (2026-09-02)
+
+- [x] Back داخلی با `BackHandler` به مسیر قبلی برمی‌گردد.
+- [x] مسیرهای داخلی در نهایت به Dashboard ختم می‌شوند و Dashboard رفتار خروج استاندارد را حفظ می‌کند.
+- [x] انتخاب‌های منوی سطح‌بالا history جعلی ایجاد نمی‌کنند.
+- [x] جزئیات گفتگو با نگه‌داشتن مقصد والد به فهرست Inbox یا Sent برمی‌گردد.
+- [x] پشتهٔ مسیر و شناسهٔ گفتگو با `rememberSaveable` برای rotation/recomposition حفظ می‌شوند.
+- [x] تست‌های Unit و Compose برای Settings، Inbox→Conversation و Send اضافه شدند.
+- [ ] تأیید build/test روی CI؛ اجرای محلی به‌دلیل resolve نشدن `com.android.application:9.1.1` متوقف شد. CI runهای `33685149124` (commit `addc202`) و `33685667122` (commit `80a7be6`) در `Run unit tests` شکست خوردند و `Assemble debug APK` به‌دلیل fail قبلی skip شد؛ run پایهٔ قبل از این اصلاح (`33616603823`, commit `ca1c463`) نیز همین وضعیت را داشت.
+
 ## ۴. محدوده
 
 ### باید انجام شود

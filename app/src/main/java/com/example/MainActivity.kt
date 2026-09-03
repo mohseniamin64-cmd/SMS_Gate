@@ -241,6 +241,57 @@ enum class AppDestination(
     }
 }
 
+data class AppRoute(val destinationKey: String, val conversationId: Long? = null, val parentKey: String? = null)
+
+class AppNavigationState(initialStack: List<AppRoute> = listOf(AppRoute(AppDestination.DASHBOARD.key))) {
+    var backStack by mutableStateOf(initialStack)
+        private set
+
+    val currentRoute: AppRoute get() = backStack.last()
+    val canGoBack: Boolean get() = backStack.size > 1
+
+    /** Select a top-level destination without accumulating tab/menu history. */
+    fun navigateTo(destination: AppDestination) {
+        backStack = if (destination == AppDestination.DASHBOARD) {
+            listOf(AppRoute(AppDestination.DASHBOARD.key))
+        } else {
+            listOf(AppRoute(AppDestination.DASHBOARD.key), AppRoute(destination.key))
+        }
+    }
+
+    fun openConversation(messageId: Long, parent: AppDestination) {
+        backStack = listOf(
+            AppRoute(AppDestination.DASHBOARD.key),
+            AppRoute(parent.key),
+            AppRoute(AppDestination.CONVERSATION.key, messageId, parent.key)
+        )
+    }
+
+    fun pop() {
+        if (canGoBack) backStack = backStack.dropLast(1)
+    }
+
+    companion object {
+        val Saver: Saver<AppNavigationState, List<String>> = Saver(
+            save = { state -> state.backStack.map { route -> "${route.destinationKey}|${route.conversationId ?: ""}|${route.parentKey ?: ""}" } },
+            restore = { saved ->
+                AppNavigationState(saved.map { encoded ->
+                    val parts = encoded.split('|', limit = 3)
+                    AppRoute(parts[0], parts.getOrNull(1)?.toLongOrNull(), parts.getOrNull(2)?.ifBlank { null })
+                }.ifEmpty { listOf(AppRoute(AppDestination.DASHBOARD.key)) })
+            }
+        )
+    }
+}
+
+@Composable
+fun rememberAppNavigationState(): AppNavigationState = rememberSaveable(saver = AppNavigationState.Saver) { AppNavigationState() }
+
+@Composable
+fun AppNavigationBackHandler(navigation: AppNavigationState) {
+    BackHandler(enabled = navigation.canGoBack) { navigation.pop() }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SmsGatewayAppScreen(

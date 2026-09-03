@@ -29,6 +29,7 @@ import retrofit2.HttpException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 class SmsRepository(private val context: Context) {
     private val db = AppDatabase.getDatabase(context)
@@ -52,6 +53,27 @@ class SmsRepository(private val context: Context) {
 
     suspend fun clearLogs() = logDao.clearLogs()
     suspend fun clearQueueHistory() = smsQueueDao.clearHistory()
+
+    suspend fun enqueueSms(
+        requestId: String,
+        phoneNumber: String,
+        messageBody: String,
+        simSlot: Int
+    ): SmsQueueItem = withContext(Dispatchers.IO) {
+        val safeRequestId = requestId.trim().ifBlank { "phone_" + UUID.randomUUID() }
+        val existing = smsQueueDao.getByRequestId(safeRequestId)
+        if (existing != null) return@withContext existing
+        val item = SmsQueueItem(
+            requestId = safeRequestId,
+            phoneNumber = phoneNumber.trim(),
+            messageBody = messageBody.trim(),
+            simSlot = simSlot,
+            status = "PENDING"
+        )
+        smsQueueDao.insert(item)
+        log("INFO", "پیامک از API سرور گوشی در صف ثبت شد", "PhoneServer")
+        smsQueueDao.getByRequestId(safeRequestId) ?: item
+    }
 
     /**
      * Reads the complete real Telephony provider snapshot. The provider type

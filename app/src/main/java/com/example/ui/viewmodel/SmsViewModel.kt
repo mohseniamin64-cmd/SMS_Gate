@@ -22,6 +22,8 @@ import com.example.data.repository.SmsRepository
 import com.example.data.repository.SyncResult
 import com.example.data.remote.LanConnectionState
 import com.example.data.remote.LanEndpointValidator
+import com.example.data.remote.PhoneServerSecurity
+import com.example.data.remote.PhoneServerStatusStore
 import com.example.receiver.GatewayBootReceiver
 import com.example.service.SmsGatewayService
 import kotlinx.coroutines.Dispatchers
@@ -92,9 +94,9 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             if (settingsState.value.isGatewayEnabled &&
-                _lanConnectionState.value is LanConnectionState.Offline
+                !PhoneServerStatusStore.state.value.running
             ) {
-                viewModelScope.launch { verifyGatewayConnection(settingsState.value) }
+                startService()
             }
         }
 
@@ -110,12 +112,21 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
     init {
         runCatching { connectivityManager.registerDefaultNetworkCallback(networkCallback) }
         viewModelScope.launch {
+            PhoneServerStatusStore.state.collectLatest { server ->
+                _lanConnectionState.value = when {
+                    server.error != null -> LanConnectionState.Error(server.error)
+                    server.running -> LanConnectionState.Connected(
+                        server.primaryEndpoint ?: "IP در دسترس نیست:${server.port}"
+                    )
+                    settingsState.value.isGatewayEnabled -> LanConnectionState.Connecting
+                    else -> LanConnectionState.Disconnected
+                }
+            }
+        }
+        viewModelScope.launch {
             settingsState.collectLatest { settings ->
-                if (settings.isGatewayEnabled &&
-                    settings.serverUrl.isNotBlank() &&
-                    _lanConnectionState.value is LanConnectionState.Disconnected
-                ) {
-                    verifyGatewayConnection(settings)
+                if (settings.isGatewayEnabled && !PhoneServerStatusStore.state.value.running) {
+                    startService()
                 }
             }
         }
@@ -129,20 +140,16 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
         if (_lanConnectionState.value is LanConnectionState.Connecting) return
         viewModelScope.launch {
             val settings = settingsState.value
-            val validation = LanEndpointValidator.validate(settings.serverUrl)
-            if (!validation.isValid) {
-                _lanConnectionState.value = LanConnectionState.Error(
-                    validation.errorMessage ?: "آدرس سرور معتبر نیست"
-                )
-                return@launch
-            }
-            if (!hasNetwork()) {
-                _lanConnectionState.value = LanConnectionState.Offline(
-                    "اتصال شبکه برقرار نیست؛ ابتدا به همان شبکهٔ LAN متصل شوید"
-                )
-                return@launch
-            }
-            connectGatewayInternal(settings.copy(serverUrl = validation.normalizedBaseUrl), persist = true)
+            val key = settings.phoneServerApiKey.ifBlank { PhoneServerSecurity.generateApiKey() }
+            val updated = settings.copy(
+                phoneServerPort = settings.phoneServerPort.coerceIn(1024, 65_535),
+                phoneServerApiKey = key,
+                isGatewayEnabled = true
+            )
+            repository.settingsDao.saveSettings(updated)
+            repository.log("INFO", "سرور HTTP گوشی فعال شد", "Gateway")
+            _lanConnectionState.value = LanConnectionState.Connecting
+            startService()
         }
     }
 
@@ -165,76 +172,24 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
         if (enabled) connectGateway() else disconnectGateway()
     }
 
-    private suspend fun verifyGatewayConnection(settings: GatewaySettings) {
-        val validation = LanEndpointValidator.validate(settings.serverUrl)
-        if (!validation.isValid) {
-            _lanConnectionState.value = LanConnectionState.Error(
-                validation.errorMessage ?: "آدرس سرور معتبر نیست"
-            )
-            return
-        }
-        if (!hasNetwork()) {
-            _lanConnectionState.value = LanConnectionState.Offline(
-                "اتصال شبکه برقرار نیست"
-            )
-            return
-        }
-        connectGatewayInternal(settings.copy(serverUrl = validation.normalizedBaseUrl), persist = false)
-    }
-
-    private suspend fun connectGatewayInternal(settings: GatewaySettings, persist: Boolean) {
-        val validation = LanEndpointValidator.validate(settings.serverUrl)
-        _lanConnectionState.value = LanConnectionState.Connecting
-        val result = repository.checkPanelConnection(settings)
-        if (!result.isSuccess) {
-            _lanConnectionState.value = LanConnectionState.Error(result.message)
-            return
-        }
-        if (persist) {
-            repository.settingsDao.saveSettings(
-                settings.copy(
-                    serverUrl = validation.normalizedBaseUrl,
-                    isGatewayEnabled = true
-                )
-            )
-            repository.log("INFO", "اتصال Gateway برقرار و فعال شد", "Gateway")
-        }
-        _lanConnectionState.value = LanConnectionState.Connected(validation.endpoint)
-        startService()
-        scheduleBackgroundWork(settings.copy(isGatewayEnabled = true))
-    }
-
     fun saveSettings(settings: GatewaySettings) {
         viewModelScope.launch(Dispatchers.IO) {
-            val validation = if (settings.serverUrl.isBlank()) {
-                null
-            } else {
-                LanEndpointValidator.validate(settings.serverUrl).also {
-                    if (!it.isValid) {
-                        _lanConnectionState.value = LanConnectionState.Error(
-                            it.errorMessage ?: "آدرس سرور معتبر نیست"
-                        )
-                    }
-                }
-            }
-            if (settings.serverUrl.isNotBlank() && validation?.isValid != true) return@launch
-
             val current = repository.settingsDao.getSettings() ?: settingsState.value
-            val normalizedUrl = validation?.normalizedBaseUrl ?: ""
-            val urlChanged = current.serverUrl != normalizedUrl
-            val enabled = current.isGatewayEnabled && normalizedUrl.isNotBlank() && !urlChanged
+            val validation = if (settings.serverUrl.isBlank()) null else LanEndpointValidator.validate(settings.serverUrl)
+            if (settings.serverUrl.isNotBlank() && validation?.isValid != true) {
+                _lanConnectionState.value = LanConnectionState.Error(
+                    validation?.errorMessage ?: "آدرس پنل Flask معتبر نیست"
+                )
+                return@launch
+            }
             val updated = settings.copy(
-                serverUrl = normalizedUrl,
-                isGatewayEnabled = enabled
+                serverUrl = validation?.normalizedBaseUrl ?: "",
+                phoneServerPort = settings.phoneServerPort.coerceIn(1024, 65_535),
+                isGatewayEnabled = current.isGatewayEnabled
             )
             repository.settingsDao.saveSettings(updated)
             repository.log("INFO", "تنظیمات دستگاه ذخیره شد", "Settings")
-            if (urlChanged || !enabled) {
-                _lanConnectionState.value = LanConnectionState.Disconnected
-                stopService()
-            } else {
-                startService()
-            }
+            if (updated.isGatewayEnabled) startService()
             scheduleBackgroundWork(updated)
             _toastMessage.value = "تنظیمات ذخیره شد"
         }
@@ -281,7 +236,11 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
                 val inboxResult = repository.syncInboxAndDetectDeletions()
                 val settings = repository.settingsDao.getSettings() ?: settingsState.value
                 val gatewayResult = if (settings.isGatewayEnabled) {
-                    val poll = repository.pollPendingMessagesFromServer()
+                    val poll = if (settings.serverUrl.isNotBlank() && settings.apiKey.isNotBlank()) {
+                        repository.pollPendingMessagesFromServer()
+                    } else {
+                        SyncResult(true, "سرور گوشی فعال است؛ صف محلی بررسی شد")
+                    }
                     repository.processOutgoingQueue()
                     poll
                 } else {
@@ -399,12 +358,6 @@ class SmsViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-
-    private fun hasNetwork(): Boolean {
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-    }
 
     override fun onCleared() {
         runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }

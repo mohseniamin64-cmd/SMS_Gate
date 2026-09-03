@@ -21,6 +21,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.data.repository.CallLogRepository
 import com.example.data.repository.SmsRepository
+import com.example.data.remote.PhoneServerSecurity
 import com.example.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +36,7 @@ class SmsGatewayService : Service() {
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     private lateinit var repository: SmsRepository
+    private lateinit var phoneServer: PhoneHttpServer
     private var syncJob: Job? = null
     private var isRunning = false
 
@@ -51,6 +53,7 @@ class SmsGatewayService : Service() {
     override fun onCreate() {
         super.onCreate()
         repository = SmsRepository(this)
+        phoneServer = PhoneHttpServer(this, repository, serviceScope)
         createNotificationChannel()
         try {
             contentResolver.registerContentObserver(Uri.parse("content://sms/"), true, smsObserver)
@@ -70,6 +73,11 @@ class SmsGatewayService : Service() {
         if (!isRunning) {
             isRunning = true
             startForegroundNotification()
+        }
+        serviceScope.launch(Dispatchers.IO) {
+            val settings = ensurePhoneServerSettings()
+            phoneServer.stop()
+            if (settings.isGatewayEnabled) phoneServer.start(settings)
             startPeriodicSync()
         }
         return START_STICKY
@@ -113,7 +121,11 @@ class SmsGatewayService : Service() {
             while (isActive) {
                 val settings = repository.settingsDao.getSettings()
                 if (settings?.isGatewayEnabled == true) {
-                    repository.pollPendingMessagesFromServer()
+                    // The phone HTTP server is the primary connection. The
+                    // Flask/panel path remains an optional legacy poller.
+                    if (settings.serverUrl.isNotBlank() && settings.apiKey.isNotBlank()) {
+                        repository.pollPendingMessagesFromServer()
+                    }
                     repository.processOutgoingQueue()
                     repository.syncInboxAndDetectDeletions()
                     if (
@@ -142,6 +154,8 @@ class SmsGatewayService : Service() {
                 repository.settingsDao.saveSettings(it.copy(isGatewayEnabled = false))
             }
             repository.log("INFO", "سرویس پس‌زمینه متوقف شد", "Service")
+            phoneServer.stop()
+            isRunning = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -150,6 +164,7 @@ class SmsGatewayService : Service() {
     @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     override fun onTimeout(startId: Int) {
         syncJob?.cancel()
+        phoneServer.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf(startId)
     }
@@ -157,6 +172,7 @@ class SmsGatewayService : Service() {
     @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     override fun onTimeout(startId: Int, fgsType: Int) {
         syncJob?.cancel()
+        phoneServer.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf(startId)
     }
@@ -164,6 +180,7 @@ class SmsGatewayService : Service() {
     override fun onDestroy() {
         runCatching { contentResolver.unregisterContentObserver(smsObserver) }
         syncJob?.cancel()
+        phoneServer.stop()
         serviceJob.cancel()
         super.onDestroy()
     }
@@ -179,6 +196,16 @@ class SmsGatewayService : Service() {
             )
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
+    }
+
+    private suspend fun ensurePhoneServerSettings(): com.example.data.local.GatewaySettings {
+        val current = repository.settingsDao.getSettings()
+            ?: com.example.data.local.GatewaySettings()
+        val port = current.phoneServerPort.coerceIn(1024, 65_535)
+        val key = current.phoneServerApiKey.ifBlank { PhoneServerSecurity.generateApiKey() }
+        val updated = current.copy(phoneServerPort = port, phoneServerApiKey = key)
+        if (updated != current) repository.settingsDao.saveSettings(updated)
+        return updated
     }
 
     companion object {

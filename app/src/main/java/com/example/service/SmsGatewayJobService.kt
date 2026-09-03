@@ -33,7 +33,9 @@ class SmsGatewayJobService : JobService() {
                 val settings = AppDatabase.getDatabase(applicationContext).settingsDao().getSettings()
                 if (settings?.isGatewayEnabled == true) {
                     repository.syncInboxAndDetectDeletions()
-                    repository.pollPendingMessagesFromServer()
+                    if (settings.serverUrl.isNotBlank() && settings.apiKey.isNotBlank()) {
+                        repository.pollPendingMessagesFromServer()
+                    }
                     repository.processOutgoingQueue()
                     if (
                         settings.callLogSyncEnabled &&

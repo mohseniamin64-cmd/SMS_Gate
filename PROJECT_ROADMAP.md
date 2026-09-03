@@ -587,3 +587,17 @@
 - محدودیت‌های تأییدنشده: گوشی واقعی، Default SMS Role، Dual-SIM واقعی، Delivery واقعی، Doze/Battery و اجرای ۷۲ ساعته.
 - وضعیت: MVP نرم‌افزاری انجام شد؛ آمادهٔ نصب آزمایشی، نه تأیید production.
 - گام بعدی: نصب APK و اجرای سناریوهای Permission، دریافت/ارسال، حذف/Restart، Dual-SIM و Call Log روی دستگاه واقعی.
+
+### رکورد ۰۰۸ — معماری Phone-as-Server
+
+- تاریخ: 2026-09-02
+- شاخه: `codex/phone-server-architecture`، پایه از آخرین `main` با commit `84dee27`.
+- هدف: قرارگرفتن HTTP Server واقعی داخل Android و اتصال کلاینت وب/رایانه به IP گوشی، بدون حذف backend Flask.
+- Android: `PhoneHttpServer` داخل `SmsGatewayService` با bind روی `0.0.0.0`، پورت قابل تنظیم، foreground lifecycle، restart/stop، خطای پورت، کشف IPهای LAN و API key تصادفی constant-time اضافه شد.
+- API گوشی: `/api/health`، `/api/status`، `/api/sms/read`، `/api/sms/send`، `/api/sms/sync`، `/api/call-logs` و `/api/call-logs/sync`؛ ثبت SMS از API با `requestId` idempotent به صف فعلی وصل است و محدودیت‌های test mode، working hours، rate limit و permission حفظ شده‌اند.
+- داده و UI: migration Room نسخهٔ ۳ برای `phoneServerPort` و `phoneServerApiKey`، نمایش endpoint در وضعیت Gateway، و تنظیمات کلید/پورت اضافه شد. `serverUrl` و polling Flask حذف نشدند و فقط optional legacy هستند.
+- مستندات: `docs/PHONE_SERVER_API.md` اضافه شد؛ هیچ secret یا متن پیام در source/log ثبت نشده است.
+- تست اضافه‌شده: `PhoneServerSecurityTest` برای Bearer/X-API-Key، رد credential نادرست و تولید کلید.
+- `git diff --check`: موفق.
+- Build/test واقعی: `testDebugUnitTest` و `assembleDebug` ابتدا با cache/offline و سپس هر دو با دسترسی آنلاین و `--refresh-dependencies` قبل از compile به‌علت resolve نشدن `com.android.tools.build:gradle:8.13.0` از Google/Maven/Plugin Portal متوقف شدند؛ هیچ خطای واقعی Kotlin از مرحلهٔ compile حاصل نشد و هیچ build سبزی ادعا نمی‌شود.
+- محدودیت باقی‌مانده: تست listener روی دستگاه واقعی و تست build پس از فراهم‌شدن artifactهای AGP باید انجام شود. Push انجام نشده است.

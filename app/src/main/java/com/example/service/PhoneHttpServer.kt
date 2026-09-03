@@ -218,10 +218,16 @@ class PhoneHttpServer(
     private suspend fun statusJson(): String {
         val settings = repository.settingsDao.getSettings() ?: GatewaySettings()
         val queued = repository.smsQueueDao.getQueueByStatus("PENDING").size
-        val addresses = PhoneNetworkAddresses.localIpv4Addresses(context)
+        val serverState = PhoneServerStatusStore.state.value
+        val addresses = if (serverState.running) {
+            serverState.addresses
+        } else {
+            emptyList()
+        }
         val addressesJson = addresses.joinToString(",") { JSONObject.quote(it) }
         return "{\"success\":true,\"service\":\"sms-center-phone\",\"deviceId\":${JSONObject.quote(settings.deviceId)}," +
-            "\"running\":true,\"port\":${settings.phoneServerPort},\"addresses\":[$addressesJson],\"pendingSms\":$queued}"
+            "\"running\":${serverState.running},\"port\":${serverState.port},\"addresses\":[$addressesJson],\"pendingSms\":$queued" +
+            (serverState.error?.let { ",\"error\":${JSONObject.quote(it)}" } ?: "") + "}"
     }
 
     private fun readRequest(socket: Socket): HttpRequest? {

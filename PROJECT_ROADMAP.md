@@ -612,3 +612,9 @@
 - شبکه و API: IPهای Wi-Fi/Ethernet اولویت دارند؛ onLost وقتی listener زنده است Offline جعلی نمی‌سازد؛ `POST /api/call-logs/sync` provider و outbox محلی را واقعاً refresh می‌کند.
 - تست‌های اضافه‌شده: policy lifecycle Android 15، CORS/scheme و تست concurrent Room برای get-or-insert و claim.
 - نتایج: `git diff --check` موفق و `python -m pytest backend/tests -q` برابر `5 passed`؛ `assembleDebug` و `testDebugUnitTest` آنلاین با `--refresh-dependencies` قبل از compile به‌علت resolve نشدن `com.android.tools.build:gradle:8.13.0` متوقف شدند. هیچ build سبزی ادعا نمی‌شود.
+
+### رکورد ۰۱۰ — اصلاح صحت status API
+
+- تاریخ: 2026-09-02
+- `GET /api/status` اکنون `running`، `port`، `addresses` و `error` را مستقیماً از `PhoneServerStatusStore` می‌خواند؛ در حالت starting/stopped/failed دیگر وضعیت فعال جعلی گزارش نمی‌شود.
+- تست `PhoneServerStatusTest` انتقال وضعیت‌های starting، running، failed و stopped را پوشش می‌دهد.
